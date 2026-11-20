@@ -136,6 +136,7 @@ h1,h2,h3{margin:0;font-weight:700}
 }
 @media (max-width:480px){.dgrid{grid-template-columns:minmax(0,1fr)}.shopgrid{grid-template-columns:minmax(0,1fr)}.hpbar{width:100px}}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -826,6 +827,8 @@ function roomHTML(){
     if(rm.phase==='prep'){
       body=`<p>请在 OJ 上自行挑选一道 ${lvTag} 难度的题，建议题型：<b>${rm.topic}</b>。</p>
       <div class="msg mono">时限 ${lim} 分钟${c.bonusMin?`（基础 ${c.baseMin}，加成 +${c.bonusMin}）`:''}</div>
+      <div class="row"><button data-a="randomLuogu">🎲 洛谷随机跳题</button><span class="dim" style="font-size:12px">按当前难度与建议题型筛选</span></div>
+      <div id="luoguPickStatus" class="dim" style="font-size:12px;min-height:1.4em"></div>
       <button class="primary" data-a="startCombat">选好了，开始计时</button>`;
     }else if(rm.phase==='fight'){
       const hints=c.hints.map(h=>`<div class="hint">${esc(h)}</div>`).join('');
@@ -957,6 +960,116 @@ function tick(){
 setInterval(tick,500);
 setInterval(()=>{if(net.connected&&run&&cb()&&cb().started&&!cb().done){syncStatus()}},5000);
 
+/* ---------- 洛谷离线随机跳题（参考用户提供的洛谷随机跳题插件） ---------- */
+const LUOGU_DB='OI2LuoguOfflineDB', LUOGU_STORE='problems';
+const LUOGU_DATA_URL='https://cdn.luogu.com.cn/problemset-open/latest.ndjson.gz';
+let luoguDBPromise=null, luoguImportPromise=null;
+function openLuoguDB(){
+  if(luoguDBPromise)return luoguDBPromise;
+  luoguDBPromise=new Promise((resolve,reject)=>{
+    if(!('indexedDB' in window)){reject(new Error('当前浏览器不支持 IndexedDB'));return}
+    const req=indexedDB.open(LUOGU_DB,1);
+    req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains(LUOGU_STORE))db.createObjectStore(LUOGU_STORE,{keyPath:'pid'})};
+    req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('打开本地题库失败'));
+  });
+  return luoguDBPromise;
+}
+async function luoguProblemCount(){const db=await openLuoguDB();return new Promise((resolve,reject)=>{const tx=db.transaction(LUOGU_STORE,'readonly'),q=tx.objectStore(LUOGU_STORE).count();q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)})}
+async function importLuoguProblems(){
+  if(luoguImportPromise)return luoguImportPromise;
+  luoguImportPromise=(async()=>{
+    if(typeof window.pako==='undefined')throw new Error('压缩库加载失败，请检查网络后刷新页面');
+    const status=document.getElementById('luoguPickStatus');if(status)status.textContent='正在下载洛谷离线题库（首次使用需要一些时间）…';
+    const response=await fetch(LUOGU_DATA_URL,{mode:'cors',cache:'no-cache'});
+    if(!response.ok)throw new Error('题库下载失败：HTTP '+response.status);
+    const compressed=new Uint8Array(await response.arrayBuffer());
+    const ndjson=window.pako.ungzip(compressed,{to:'string'});
+    const lines=ndjson.split('\n');
+    const db=await openLuoguDB();let batch=[];let imported=0;
+    const writeBatch=()=>new Promise((resolve,reject)=>{
+      if(!batch.length){resolve();return}
+      const tx=db.transaction(LUOGU_STORE,'readwrite'),store=tx.objectStore(LUOGU_STORE);
+      for(const item of batch)store.put(item);
+      tx.oncomplete=()=>{imported+=batch.length;batch=[];if(status)status.textContent=`正在建立本地题库：${imported.toLocaleString()} 题`;resolve()};
+      tx.onerror=()=>reject(tx.error||new Error('写入本地题库失败'));
+    });
+    for(let i=0;i<lines.length;i++){
+      if(!lines[i])continue;
+      try{const o=JSON.parse(lines[i]);if(o.pid&&Number.isFinite(Number(o.difficulty)))batch.push({pid:String(o.pid),title:String(o.title||''),difficulty:Number(o.difficulty),type:String(o.type||''),tags:Array.isArray(o.tags)?o.tags:[]})}catch(_){ }
+      if(batch.length>=1200)await writeBatch();
+    }
+    await writeBatch();
+    if(!imported)throw new Error('洛谷题库没有返回有效题目');
+    return imported;
+  })();
+  try{return await luoguImportPromise}finally{luoguImportPromise=null}
+}
+function luoguDifficultyValues(hint){
+  // 按游戏的推荐颜色映射洛谷公开题库 difficulty：黄=普及(3)，
+  // 绿=普及+/提高-(4)，青=提高(5)，蓝=提高+/省选-(6)。
+  const label=String(hint&&hint[0]||'');
+  if(label.includes('难青 ~ 蓝'))return [5,6];
+  if(label.includes('黄'))return [3];
+  if(label.includes('绿'))return [4];
+  if(label.includes('蓝'))return [6];
+  if(label.includes('青'))return [5];
+  return [];
+}
+function luoguTopicTags(topic){
+  // 这些名称取自洛谷题库的「算法」标签；同一推荐方向内按 OR 匹配。
+  const map={
+    '数据结构':['树形数据结构','线性数据结构','线段树','并查集','平衡树','堆','树状数组','可并堆','动态树 LCT','单调队列','单调栈','树套树','可持久化线段树','可持久化','前缀和','栈','队列','整体二分','K-D Tree','李超线段树','线段树合并','哈希表','莫队','分块','ST 表','优先队列','树链剖分','树的遍历','最近公共祖先 LCA','树的直径','点分治','树上启发式合并'],
+    '动态规划':['动态规划 DP','背包 DP','数位 DP','区间 DP','树形 DP','轮廓线 DP','线性 DP','状压 DP','记忆化搜索','动态规划优化','斜率优化','状态合并','DP 套 DP','动态 DP','决策单调性','整体转移'],
+    '图论':['图论','Kruskal 重构树','网络流','图论建模','图遍历','拓扑排序','最短路','生成树','最小环','负权环','连通块','2-SAT','强连通分量','Tarjan','双连通分量','欧拉回路','差分约束','仙人掌','二分图','一般图的最大匹配','上下界网络流','最小割','费用流','圆方树','Floyd 算法','广义串并联图','Hall 定理','基环树','虚树','树论','最大流最小割定理'],
+    '数学 / 数论':['数学','数论','素数判断','最大公约数 gcd','扩展欧几里德算法','不定方程','进制','快速傅里叶变换 FFT','快速数论变换 NTT','快速沃尔什变换 FWT','快速莫比乌斯变换 FMT','中国剩余定理 CRT','莫比乌斯反演','逆元','Lucas 定理','类欧几里得算法','调和级数','欧拉降幂','整除分块','Dirichlet 卷积','大步小步算法 BSGS','二次剩余','Bézout 定理','杜教筛','欧拉函数','线性筛法','原根','多项式','组合数学','排列组合','二项式定理','康托展开','Prüfer 序列','LGV 引理','矩阵树定理','鸽笼原理','容斥原理','Fibonacci 数列','Catalan 数','Stirling 数','生成函数','概率论','期望','线性代数','矩阵运算','高斯消元','拉格朗日反演','微积分','导数','积分','定积分','级数','行列式','特征值'],
+    '字符串':['字符串','后缀自动机 SAM','字典树 Trie','AC 自动机','KMP 算法','后缀数组 SA','后缀树','有限状态自动机','回文自动机 PAM','Manacher 算法','Lyndon 分解','Z 函数','哈希 hashing'],
+    '贪心':['贪心','反悔贪心'],
+    '搜索 / 剪枝':['搜索','广度优先搜索 BFS','深度优先搜索 DFS','剪枝','记忆化搜索','启发式搜索','迭代加深搜索','启发式迭代加深搜索 IDA*','Dancing Links','折半搜索 meet in the middle','A*  算法'],
+    '构造':['构造','Ad-hoc','分类讨论'],
+    '二分 / 三分':['二分','三分','整体二分'],
+    '计算几何':['计算几何','三维计算几何','向量','凸包','叉积','线段相交','半平面交','旋转卡壳','极角排序','平面几何','闵可夫斯基和 Minkowski sum'],
+    '模拟':['模拟','高精度'],
+    '博弈论':['博弈论','博弈树','Nim 积','SG 函数']
+  };
+  return map[topic]||[];
+}
+function normalizeLuoguTag(value){return String(value||'').normalize('NFKC').toLowerCase().replace(/[\s　]+/g,'').replace(/[（）()]/g,'')}
+function chooseLuoguProblem(problems,room){
+  const difficulties=luoguDifficultyValues(room.hint);
+  const wantedTags=luoguTopicTags(room.topic).map(normalizeLuoguTag);
+  if(!difficulties.length||!wantedTags.length)return null;
+  // 难度与算法必须同时满足；算法标签在推荐方向内 OR 匹配，不退回到无标签题。
+  let pool=problems.filter(p=>difficulties.includes(Number(p.difficulty))&&(p.tags||[]).some(tag=>{
+    const normalized=normalizeLuoguTag(typeof tag==='string'?tag:(tag&&tag.name)||tag);
+    return wantedTags.some(w=>normalized===w||normalized.includes(w)||w.includes(normalized));
+  }));
+  // 符合推荐条件时优先主题库 P 题；没有 P 题才从其它题库类型中抽取。
+  const main=pool.filter(p=>p.type==='P');if(main.length)pool=main;
+  if(!pool.length)return null;
+  return pool[Math.floor(Math.random()*pool.length)];
+}
+async function randomLuoguJump(popup){
+  const status=document.getElementById('luoguPickStatus');
+  try{
+    let count=await luoguProblemCount();
+    if(!count){await importLuoguProblems();count=await luoguProblemCount()}
+    if(status)status.textContent='正在从本地题库筛选…';
+    const db=await openLuoguDB();
+    const all=await new Promise((resolve,reject)=>{const tx=db.transaction(LUOGU_STORE,'readonly'),q=tx.objectStore(LUOGU_STORE).getAll();q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
+    const problem=chooseLuoguProblem(all,run.room);
+    if(!problem)throw new Error(`题库中暂时没有同时符合推荐难度（${(luoguDifficultyValues(run.room.hint)||[]).join('/')}）和算法「${run.room.topic}」的题目；没有擅自放宽筛选条件，请换一间战斗房或更新题库`);
+    const url='https://www.luogu.com.cn/problem/'+encodeURIComponent(problem.pid);
+    if(popup&&!popup.closed)popup.location.href=url;else window.open(url,'_blank','noopener');
+    if(status)status.textContent=`已抽中：${problem.pid} · ${problem.title||'未命名题目'}（洛谷难度 ${problem.difficulty}，算法：${run.room.topic}）`;
+    toast('已抽取洛谷题目：'+problem.pid);
+  }catch(err){
+    console.error('洛谷随机跳题失败',err);
+    if(popup&&!popup.closed)popup.close();
+    if(status)status.textContent='随机跳题失败：'+(err.message||'未知错误');
+    toast('洛谷随机跳题失败，请检查网络或稍后重试');
+  }
+}
+
 /* ---------- 事件分发 ---------- */
 $app.addEventListener('click',e=>{
   const t=e.target.closest('[data-a]');if(!t||t.disabled)return;
@@ -970,6 +1083,7 @@ $app.addEventListener('click',e=>{
     case 'continue':try{const r=JSON.parse(lsGet(LS_RUN));if(r&&!r.over&&!r.victory){run=r;view='game';lastMapAct=null;render();break}}catch(x){}lsDel(LS_RUN);toast('没有可继续的存档');render();break;
     case 'node':enterNode(+d.r,+d.c);break;
     case 'root':chooseRoot(+d.i);break;
+    case 'randomLuogu':{const popup=window.open('about:blank','_blank');randomLuoguJump(popup);break}
     case 'startCombat':startCombat();break;
     case 'ac':winCombat();break;
     case 'giveup':cb().confirm=true;render();break;
