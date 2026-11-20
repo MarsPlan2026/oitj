@@ -1,5 +1,10 @@
 // OI 尖塔 II 联机服务器：零依赖，仅需 Node.js 14+
 // 运行：node server.js   然后用浏览器打开 http://localhost:8787
+//
+// 联机规则（与杀戮尖塔 2 一致）：全队共享同一张地图与进度。
+//   投票阶段：所有存活玩家各投一个节点，票数最多者胜出（平票随机），然后全队一起进入该房间。
+//   房间阶段：每人在自己的房间里独立结算，全部完成后回到投票阶段。
+//   倒下或掉线的玩家改为观战，不再计入投票与完成；全部倒下则本局失败。
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -31,12 +36,54 @@ function frame(op, payload) {
 }
 
 /* ---------- 房间 ---------- */
-const rooms = new Map(); // code -> {members:Map, host, started, config}
+const rooms = new Map(); // code -> {code, members:Map, host, started, config, game}
 let nextId = 1;
 
 function send(c, obj) { if (!c.closed) { try { c.sock.write(frame(1, JSON.stringify(obj))); } catch (e) {} } }
 function memberList(room) { return [...room.members.values()].map(m => ({ id: m.id, name: m.name, s: m.status })); }
 function broadcast(room, obj, except) { for (const m of room.members.values()) if (m !== except) send(m, obj); }
+
+/* ---------- 全队进度（投票 / 房间） ---------- */
+function newGame(room) {
+  return { phase: 'room', step: 0, votes: {}, done: {}, players: new Set(room.members.keys()), over: false };
+}
+function gState(room) {
+  const g = room.game; if (!g) return null;
+  return { phase: g.phase, step: g.step, votes: g.votes, done: Object.keys(g.done), players: [...g.players], over: g.over };
+}
+function pushG(room) { broadcast(room, { t: 'g', g: gState(room) }); }
+
+function step(room) {
+  const g = room.game;
+  if (!g || g.over) { pushG(room); return; }
+  const ps = [...g.players];
+  if (ps.length === 0) { g.over = true; pushG(room); broadcast(room, { t: 'wiped' }); return; }
+
+  if (g.phase === 'vote' && ps.every(id => g.votes[id])) {
+    const cnt = {};
+    ps.forEach(id => { const v = g.votes[id]; const k = v.r + ',' + v.c; cnt[k] = (cnt[k] || 0) + 1; });
+    const mx = Math.max(...Object.values(cnt));
+    const top = Object.keys(cnt).filter(k => cnt[k] === mx);
+    const [r, c] = top[Math.floor(Math.random() * top.length)].split(',').map(Number);
+    g.phase = 'room'; g.done = {}; g.votes = {}; g.step++;
+    pushG(room); broadcast(room, { t: 'go', r, c, step: g.step });
+    return;
+  }
+  if (g.phase === 'room' && ps.every(id => g.done[id])) {
+    const cnt = {};
+    ps.forEach(id => { const n = g.done[id].next; cnt[n] = (cnt[n] || 0) + 1; });
+    const nx = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+    g.done = {}; g.votes = {};
+    if (nx === 'finish') { g.over = true; pushG(room); broadcast(room, { t: 'finished' }); return; }
+    if (nx === 'ancient') { g.step++; pushG(room); broadcast(room, { t: 'go', r: -1, c: 3, step: g.step }); return; }
+    g.phase = 'vote'; pushG(room); return;
+  }
+  pushG(room);
+}
+function dropPlayer(room, id) {
+  const g = room.game; if (!g) return;
+  g.players.delete(id); delete g.votes[id]; delete g.done[id];
+}
 
 function leave(c) {
   const room = c.room; if (!room) return;
@@ -44,7 +91,10 @@ function leave(c) {
   if (room.members.size === 0) { rooms.delete(room.code); return; }
   if (room.host === c.id) room.host = room.members.keys().next().value;
   broadcast(room, { t: 'members', host: room.host, members: memberList(room) });
+  if (room.game && !room.game.over) { dropPlayer(room, c.id); step(room); }
 }
+
+const RELAY_OK = n => typeof n === 'number' && isFinite(n);
 
 function handle(c, m) {
   if (!m || typeof m.t !== 'string') return;
@@ -54,16 +104,18 @@ function handle(c, m) {
     if (!code) return send(c, { t: 'error', msg: '房间号不能为空' });
     leave(c);
     let room = rooms.get(code);
-    if (!room) { room = { code, members: new Map(), host: null, started: false, config: null }; rooms.set(code, room); }
+    if (!room) { room = { code, members: new Map(), host: null, started: false, config: null, game: null }; rooms.set(code, room); }
     if (room.members.size >= 12) return send(c, { t: 'error', msg: '房间已满（最多 12 人）' });
     c.name = name; c.room = room; c.status = null;
     room.members.set(c.id, c);
     if (!room.host) room.host = c.id;
-    send(c, { t: 'joined', you: c.id, room: code, host: room.host, started: room.started, config: room.config, members: memberList(room) });
+    send(c, { t: 'joined', you: c.id, room: code, host: room.host, started: room.started, config: room.config, g: gState(room), members: memberList(room) });
     broadcast(room, { t: 'members', host: room.host, members: memberList(room) }, c);
     return;
   }
   const room = c.room; if (!room) return;
+  const g = room.game;
+
   if (m.t === 'status') {
     c.status = m.s && typeof m.s === 'object' ? m.s : null;
     broadcast(room, { t: 'status', id: c.id, s: c.status }, c);
@@ -72,19 +124,49 @@ function handle(c, m) {
     broadcast(room, { t: 'chat', id: c.id, name: c.name, text });
   } else if (m.t === 'start') {
     if (room.host !== c.id) return send(c, { t: 'error', msg: '只有房主可以开始对局' });
-    const difficulty = Math.max(1, Math.min(10, parseInt(m.difficulty, 10) || 1));
+    if (room.started) return send(c, { t: 'error', msg: '对局已经开始' });
+    const d = Number(m.difficulty);
+    const difficulty = Math.max(0, Math.min(10, Number.isFinite(d) ? Math.floor(d) : 0));
     const seed = String(m.seed || Math.random().toString(36).slice(2, 8)).slice(0, 20);
     room.started = true; room.config = { difficulty, seed };
+    room.game = newGame(room);
     for (const mm of room.members.values()) mm.status = null;
     broadcast(room, { t: 'start', config: room.config });
+    pushG(room);
+    broadcast(room, { t: 'go', r: -1, c: 3, step: 0 });      // 第一座塔：先去找先古遗民
   } else if (m.t === 'reset') {
     if (room.host !== c.id) return;
-    room.started = false; room.config = null;
+    room.started = false; room.config = null; room.game = null;
     broadcast(room, { t: 'lobby' });
+    pushG(room);
+  } else if (m.t === 'spectate') {
+    if (g && !g.over) { dropPlayer(room, c.id); step(room); }
+  } else if (m.t === 'vote') {
+    if (!g || g.over || g.phase !== 'vote' || !g.players.has(c.id)) return;
+    if (!Number.isInteger(m.r) || !Number.isInteger(m.c) || m.r < 0 || m.r > 20 || m.c < 0 || m.c > 6) return;
+    g.votes[c.id] = { r: m.r, c: m.c };
+    step(room);
+  } else if (m.t === 'done') {
+    if (!g || g.over || g.phase !== 'room' || !g.players.has(c.id)) return;
+    const next = ['vote', 'ancient', 'finish'].includes(m.next) ? m.next : 'vote';
+    g.done[c.id] = { next };
+    step(room);
+  } else if (m.t === 'dead') {
+    if (!g || g.over || !g.players.has(c.id)) return;
+    dropPlayer(room, c.id); step(room);
   } else if (m.t === 'gift') {
     const to = room.members.get(m.to);
     if (!to || to === c || typeof m.potion !== 'string') return;
     send(to, { t: 'gift', from: c.id, name: c.name, potion: m.potion.slice(0, 20) });
+  } else if (m.t === 'draw') {
+    const st = m.stroke;
+    if (!st || !Array.isArray(st.p) || st.p.length > 600 || !RELAY_OK(m.act)) return;
+    if (!st.p.every(q => Array.isArray(q) && RELAY_OK(q[0]) && RELAY_OK(q[1]))) return;
+    broadcast(room, { t: 'draw', from: c.id, act: m.act, stroke: { id: String(st.id).slice(0, 24), c: String(st.c).slice(0, 9), p: st.p } }, c);
+  } else if (m.t === 'drawundo') {
+    broadcast(room, { t: 'drawundo', from: c.id, act: m.act, id: String(m.id).slice(0, 24) }, c);
+  } else if (m.t === 'drawclear') {
+    broadcast(room, { t: 'drawclear', from: c.id, act: m.act }, c);
   }
 }
 

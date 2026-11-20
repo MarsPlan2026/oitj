@@ -10,7 +10,7 @@
 :root{
   --bg:#0a0f14; --panel:#111922; --panel2:#17212c; --line:#233140; --fg:#d9e3ee; --dim:#8196ab;
   --c-monster:#c6d83a; --c-elite:#22d3ee; --c-boss:#4c7dff; --c-unknown:#a9b6c4;
-  --c-rest:#ff8a4c; --c-shop:#e879f9; --c-treasure:#f5d76e;
+  --c-rest:#ff8a4c; --c-shop:#e879f9; --c-treasure:#f5d76e; --c-ancient:#b794f6;
   --yellow:#f2c230; --green:#3fb950; --cyan:#22d3ee; --blue:#4c7dff;
   --bad:#ff6b6b; --good:#4ade80;
   --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
@@ -47,7 +47,7 @@ h1,h2,h3{margin:0;font-weight:700}
 /* 标签 */
 .chip{display:inline-flex;align-items:center;gap:.4em;padding:.05em .6em;border-radius:99px;border:1px solid currentColor;font-size:12px;white-space:nowrap}
 .k-monster{color:var(--c-monster)} .k-elite{color:var(--c-elite)} .k-boss{color:var(--c-boss)}
-.k-unknown{color:var(--c-unknown)} .k-rest{color:var(--c-rest)} .k-shop{color:var(--c-shop)} .k-treasure{color:var(--c-treasure)}
+.k-unknown{color:var(--c-unknown)} .k-rest{color:var(--c-rest)} .k-shop{color:var(--c-shop)} .k-treasure{color:var(--c-treasure)} .k-ancient{color:var(--c-ancient)}
 .p-yellow{color:var(--yellow)} .p-green{color:var(--green)} .p-cyan{color:var(--cyan)} .p-blue{color:var(--blue)} .p-mix{color:#6fc4e8}
 
 /* 难度选择 */
@@ -97,6 +97,16 @@ h1,h2,h3{margin:0;font-weight:700}
 .edge.on{stroke:var(--fg);stroke-dasharray:none;opacity:.8}
 .mapnote{padding:8px 14px;color:var(--dim);font-size:12px;display:flex;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);background:var(--panel)}
 
+/* 路径规划 / 联机 / 题库 */
+.drawbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.swatch{width:24px;height:24px;padding:0;border-radius:50%;min-width:0}
+.swatch.on{outline:2px solid var(--fg);outline-offset:2px}
+.banner{margin-bottom:8px;padding:8px 12px;border:1px solid #2a7f8c;background:#0f1d24;border-radius:8px;color:#bfe9f0}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+.chk{display:inline-flex;align-items:center;gap:6px;margin-right:12px}
+#mapwrap svg.drawing{touch-action:none}
+textarea{font:inherit;color:var(--fg);background:#0c131a;border:1px solid var(--line);border-radius:6px;padding:.4em .6em;width:100%;min-height:60px}
+.hint a{color:var(--cyan)}
 /* 弹层 */
 .modal-bg{position:fixed;inset:0;background:rgba(4,8,12,.78);display:grid;place-items:center;padding:16px;z-index:20;overflow:auto}
 .modal{width:min(640px,100%);max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid #2d4156;border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:14px}
@@ -136,7 +146,6 @@ h1,h2,h3{margin:0;font-weight:700}
 }
 @media (max-width:480px){.dgrid{grid-template-columns:minmax(0,1fr)}.shopgrid{grid-template-columns:minmax(0,1fr)}.hpbar{width:100px}}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -155,29 +164,31 @@ const W=7, ROWS=15;           // 7 列，15 层，第 16 层为 Boss
 const SPECIAL=['elite','rest','shop'];
 
 /* ---------- 难度 ---------- */
-const DNAMES=['新手村','入门赛','普及组','提高组','省选前夜','省选','集训队','国家队','IOI','AK 之路'];
+const DNAMES=['新手村','入门赛','普及组','提高组','省选前夜','省选','集训队','国家队','IOI','AK 之路','先古试炼'];
 const MODS=[
-  '基础规则：三个阶段，击败每个阶段的 Boss 才算通关。',
+  '基础规则：三个阶段，击败每个阶段的 Boss 才算通关。宽限时间：小怪 20 分钟、精英 40 分钟、Boss 60 分钟，超时后每 5 分钟扣血。',
   '精英房间更常出现。',
-  '初始最大 HP -10。',
-  '战斗失败造成的 HP 损失 +25%。',
-  '商店价格 +25%。',
   '休息处回复比例由 30% 降为 20%。',
-  '药水栏位 -1。',
   '战斗金币奖励 -25%。',
-  'Boss 战失败造成的 HP 损失 +50%；阶段之间只回复 50% HP。',
-  '没有初始遗物；未知房间更容易出现坏事件；第三阶段需连续击败两个 Boss。'
+  '药水栏位 -1。',
+  '初始最大血量 -10。',
+  '商店价格 +25%。',
+  '超时扣血 +25%。',
+  '阶段之间只回复 50% 血量。',
+  'Boss 战超时扣血 +50%；没有初始遗物。',
+  '未知房间更容易出现坏事件；第三阶段需要连续击败两个 Boss。'
 ];
 function P(d){return{
-  eliteW:d>=2?0.14:0.09, startMax:80-(d>=3?10:0), failMult:d>=4?1.25:1, shopMult:d>=5?1.25:1,
-  restPct:d>=6?0.2:0.3, slots:d>=7?2:3, goldMult:d>=8?0.75:1, bossFailMult:d>=9?1.5:1,
-  actHeal:d>=9?0.5:1, noStarter:d>=10, badEvent:d>=10?0.25:0 }}
+  eliteW:d>=1?0.14:0.09, restPct:d>=2?0.2:0.3, goldMult:d>=3?0.75:1, slots:d>=4?2:3,
+  startMax:100-(d>=5?10:0), shopMult:d>=6?1.25:1, failMult:d>=7?1.25:1, actHeal:d>=8?0.5:1,
+  bossFailMult:d>=9?1.5:1, noStarter:d>=9, badEvent:d>=10?0.25:0 }}
 
 /* ---------- 地图生成（仿杀戮尖塔：6 条不交叉路径） ---------- */
 function genMap(seed,act,diff){
   const r=rngFor(seed,'map'+act);
   const nodes=[];
-  for(let i=0;i<=ROWS;i++)nodes.push(new Array(W).fill(null));
+  const dbl=(diff===10&&act===3);
+  for(let i=0;i<=ROWS+(dbl?1:0);i++)nodes.push(new Array(W).fill(null));
   const starts=[];
   for(let p=0;p<6;p++){
     let c;
@@ -201,7 +212,8 @@ function genMap(seed,act,diff){
   }
   // 顶层节点汇入 Boss
   for(let c=0;c<W;c++){const n=nodes[ROWS-1][c];if(n)n.next=[3]}
-  nodes[ROWS][3]={r:ROWS,c:3,next:[],type:'boss'};
+  nodes[ROWS][3]={r:ROWS,c:3,next:dbl?[3]:[],type:'boss'};
+  if(dbl)nodes[ROWS+1][3]={r:ROWS+1,c:3,next:[],type:'boss'};
   // 房间类型
   const pr=P(diff);
   for(let row=0;row<ROWS;row++)for(let c=0;c<W;c++){
@@ -236,67 +248,91 @@ const MONSTER_LV=[['黄 · 偏易','yellow'],['黄 · 偏难','yellow'],['绿 ·
 const ELITE_LV=[['青 · 偏易','cyan'],['青 · 适中','cyan'],['青 · 偏难','cyan']];
 const BOSS_LV=[['难青','cyan'],['难青 ~ 蓝','mix'],['蓝 · 偏易','blue'],['蓝','blue']];
 function problemHint(run,kind,node){
-  const p=((run.difficulty-1)*3+(run.act-1))/29;
+  const p=((run.difficulty)*3+(run.act-1))/32;
   const jr=rngFor(run.seed,'ph'+run.act+'_'+node.r+'_'+node.c);
   let q=p+(node.r/ROWS-0.5)*0.12+(jr()-0.5)*0.08;
   q=Math.max(0,Math.min(0.999,q));
   if(kind==='monster')return MONSTER_LV[Math.floor(q*4)];
   if(kind==='elite')return ELITE_LV[Math.floor(q*3)];
+  if(node.r>ROWS)return BOSS_LV[3];
   return BOSS_LV[Math.floor(Math.max(0,Math.min(0.999,p))*4)];
 }
 const TOPICS=['数据结构','动态规划','图论','数学 / 数论','字符串','贪心','搜索 / 剪枝','构造','二分 / 三分','计算几何','模拟','博弈论'];
 const MONSTER_NAMES=['水题史莱姆','模板题傀儡','贪心小妖','DP 幼苗','字符串蝙蝠','图论蜘蛛','数学幽灵','二分地精','暴力哥布林'];
 const ELITE_NAMES=['卡常怪','边界数据','毒瘤构造','反 Hash 数据','大模拟魔像','交互题恶魔'];
 const BOSS_NAMES=['暴力杀手 T3','毒瘤数据结构','出题人本人'];
+const BOSS2_NAME='命题组组长';
 const STAGE_NAMES=['阶段一 · 普及组考场','阶段二 · 提高组考场','阶段三 · NOI 赛场'];
 
 /* ---------- 遗物 ---------- */
-const ROOT_BOONS=[
-  {id:'vitality',n:'先祖祝福：强健',d:'最大 HP +20，并立即回复 20 HP。',f:()=>{run.maxHp+=20;heal(20)}},
-  {id:'wisdom',n:'先祖祝福：洞察',d:'所有战斗时限永久 +5 分钟。',f:()=>{run.rootTime=(run.rootTime||0)+5}},
-  {id:'fortune',n:'先祖祝福：丰饶',d:'立即获得 100 金币，并获得一瓶治疗药水。',f:()=>{run.gold+=100;givePotion('heal')}}
-];
 const RELICS={
-  starter:{n:'新手礼包',d:'每场战斗胜利后回复 2 点 HP。',r:'starter',e:{winHeal:2}},
-  keyboard:{n:'机械键盘',d:'所有战斗时限 +5 分钟。',r:'common',e:{timeAll:5}},
-  thermos:{n:'保温杯',d:'在休息处额外回复 8 点HP。',r:'common',e:{restHeal:8}},
-  checker:{n:'对拍器',d:'战斗失败损失的HP -20%。',r:'uncommon',e:{failMult:-0.2}},
+  starter:{n:'新手礼包',d:'每场战斗胜利后回复 2 点血量。',r:'starter',e:{winHeal:2}},
+  keyboard:{n:'机械键盘',d:'所有战斗宽限时间 +5 分钟。',r:'common',e:{timeAll:5}},
+  thermos:{n:'保温杯',d:'在休息处额外回复 8 点血量。',r:'common',e:{restHeal:8}},
+  checker:{n:'对拍器',d:'超时扣血 -20%。',r:'uncommon',e:{failMult:-0.2}},
   library:{n:'板子库',d:'战斗金币奖励 +50%。',r:'common',e:{goldMult:0.5}},
-  rbtree:{n:'红黑树',d:'获得时最大HP +12。',r:'uncommon',e:{maxHp:12}},
-  aircon:{n:'空调',d:'精英战时限 +10 分钟。',r:'uncommon',e:{time_elite:10}},
+  rbtree:{n:'红黑树',d:'获得时最大血量 +12。',r:'uncommon',e:{maxHp:12}},
+  aircon:{n:'空调',d:'精英战宽限时间 +10 分钟。',r:'uncommon',e:{time_elite:10}},
   mystic:{n:'玄学',d:'未知房间更容易出现好事件。',r:'common',e:{goodEvent:0.25}},
   coupon:{n:'优惠券',d:'商店价格 -20%。',r:'common',e:{shopDiscount:0.2}},
   scratch:{n:'草稿纸',d:'战斗胜利后 35% 额外获得一瓶药水。',r:'common',e:{potionDrop:0.35}},
   dual:{n:'双屏',d:'药水栏位 +1。',r:'uncommon',e:{slots:1}},
   maker:{n:'咖啡机',d:'每进入一个新阶段，获得一杯咖啡。',r:'uncommon',e:{actCoffee:1}},
-  glasses:{n:'防蓝光眼镜',d:'Boss 战时限 +10 分钟。',r:'uncommon',e:{time_boss:10}},
-  amulet:{n:'自动机护符',d:'每个阶段第一次战斗失败不损失HP。',r:'rare',e:{actShield:1}},
+  glasses:{n:'防蓝光眼镜',d:'Boss 战宽限时间 +10 分钟。',r:'uncommon',e:{time_boss:10}},
+  amulet:{n:'自动机护符',d:'每个阶段的第一场战斗不受超时扣血。',r:'rare',e:{actShield:1}},
   wallet:{n:'钱包',d:'获得时得到 150 金币。',r:'common',e:{gold:150}},
-  lucky:{n:'开机自带 AC',d:'战斗开始时额外 +3 分钟，药水栏位 +1。',r:'rare',e:{timeAll:3,slots:1}},
-  heart:{n:'红色心形',d:'获得时最大 HP +10。',r:'common',e:{maxHp:10}},
-  stopwatch:{n:'老式秒表',d:'所有战斗时限 +3 分钟。',r:'common',e:{timeAll:3}},
-  medkit:{n:'急救箱',d:'每次进入新阶段回复 12 HP。',r:'uncommon',e:{actHealFlat:12}},
-  calculator:{n:'图形计算器',d:'小怪胜利金币 +30%。',r:'uncommon',e:{monsterGold:0.3}},
-  compass:{n:'寻路罗盘',d:'未知事件中更容易遇到有利选项。',r:'rare',e:{goodEvent:0.2}},
-  luckycoin:{n:'幸运硬币',d:'每次战斗胜利额外获得 8 金币。',r:'uncommon',e:{winGold:8}},
-  bandage:{n:'绷带卷',d:'每次战斗失败后额外回复 5 HP。',r:'rare',e:{failHeal:5}},
-  notebook:{n:'错题本',d:'每次进入战斗，随机获得一条解题提示。',r:'uncommon',e:{autoHint:1}},
-  crystal:{n:'思路水晶',d:'Boss 战胜利金币 +25%。',r:'rare',e:{bossGold:0.25}},
-  lunchbox:{n:'便当盒',d:'每进入新阶段回复 8 HP。',r:'common',e:{actHealFlat:8}},
-  magnet:{n:'金币磁铁',d:'所有战斗金币奖励 +10%。',r:'uncommon',e:{goldMult:0.1}}
+  lucky:{n:'开机自带 AC',d:'所有战斗宽限时间 +3 分钟，药水栏位 +1。',r:'rare',e:{timeAll:3,slots:1}},
+  duck:{n:'小黄鸭',d:'小怪战宽限时间 +4 分钟。',r:'common',e:{time_monster:4}},
+  errbook:{n:'错题本',d:'超时每次扣血 -2。',r:'common',e:{drainCut:2}},
+  massage:{n:'颈椎按摩仪',d:'超时每次扣血 -3。',r:'uncommon',e:{drainCut:3}},
+  recliner:{n:'躺椅',d:'在休息处额外回复 15 点血量。',r:'uncommon',e:{restHeal:15}},
+  redbull:{n:'红牛',d:'每场战斗胜利后回复 4 点血量。',r:'uncommon',e:{winHeal:4}},
+  midas:{n:'金手指',d:'战斗金币奖励 +100%。',r:'rare',e:{goldMult:1}},
+  piggy:{n:'存钱罐',d:'获得时得到 80 金币，商店价格 -10%。',r:'common',e:{gold:80,shopDiscount:0.1}},
+  oldkb:{n:'二手键盘',d:'所有战斗宽限时间 +3 分钟。',r:'common',e:{timeAll:3}},
+  headset:{n:'降噪耳机',d:'精英战与 Boss 战宽限时间各 +8 分钟。',r:'uncommon',e:{time_elite:8,time_boss:8}},
+  toolbox:{n:'万用板子库',d:'战斗金币 +20%，药水掉落率 +20%。',r:'common',e:{goldMult:0.2,potionDrop:0.2}},
+  header:{n:'头文件',d:'获得时最大血量 +8，并回复 8 点。',r:'common',e:{maxHp:8}},
+  rack:{n:'对拍机架',d:'超时扣血 -15%。',r:'uncommon',e:{failMult:-0.15}},
+  plush:{n:'毛绒玩具',d:'未知房间更容易出现好事件。',r:'common',e:{goodEvent:0.15}},
+  meal:{n:'加班餐',d:'所有回血药水额外回复 10 点血量。',r:'common',e:{potionHeal:10}},
+  notes:{n:'纸质讲义',d:'在休息处整理模板时，获得 2 瓶药水。',r:'uncommon',e:{restPotion:1}},
+  usb:{n:'祖传 U 盘',d:'每次完成未知事件，额外获得 30 金币。',r:'common',e:{eventGold:30}},
+  trophy:{n:'周赛奖杯',d:'获得时最大血量 +20。',r:'rare',e:{maxHp:20}},
+  bookmark:{n:'OI Wiki 书签',d:'每场战斗开始时自动获得一条解题思路提示。',r:'uncommon',e:{autoHint:1}},
+  grandlib:{n:'万能模板库',d:'所有战斗宽限时间 +10 分钟。',r:'rare',e:{timeAll:10}},
+  liver:{n:'肝帝套装',d:'超时每次扣血 -5。',r:'rare',e:{drainCut:5}},
+  speedkb:{n:'速通键盘',d:'精英战与 Boss 战宽限时间各 +15 分钟。',r:'rare',e:{time_elite:15,time_boss:15}},
+  whale:{n:'氪金大佬',d:'获得时得到 300 金币，商店价格 -20%。',r:'rare',e:{gold:300,shopDiscount:0.2}},
+  medkit:{n:'急救药箱',d:'在休息处额外回复 25 点血量。',r:'rare',e:{restHeal:25}},
+  adrenaline:{n:'肾上腺素',d:'每场战斗胜利后回复 8 点血量。',r:'rare',e:{winHeal:8}},
+  pharma:{n:'药剂师',d:'药水掉落率 +50%，药水栏位 +1。',r:'rare',e:{potionDrop:0.5,slots:1}},
+  nutri:{n:'营养师证书',d:'所有回血药水额外回复 20 点血量。',r:'uncommon',e:{potionHeal:20}},
+  lucky2:{n:'欧皇之手',d:'未知房间更容易出现好事件（+40%）。',r:'rare',e:{goodEvent:0.4}},
+  amulet2:{n:'双层护符',d:'每个阶段前两场战斗不受超时扣血。',r:'rare',e:{actShield:2}},
+  gymcard:{n:'健身卡',d:'获得时最大血量 +25，并回复 25 点。',r:'rare',e:{maxHp:25}},
+  retreat:{n:'闭关修炼',d:'每场战斗胜利后，最大血量 +1。',r:'uncommon',e:{winMaxHp:1}},
+  hourglass:{n:'沙漏',d:'超时扣血的间隔 +2 分钟。',r:'rare',e:{tickMin:2}},
+  collection:{n:'灵感合集',d:'每场战斗开始时自动获得 2 条解题思路提示。',r:'rare',e:{autoHint:2}},
+  ember:{n:'不灭的灯',d:'所有战斗宽限时间 +4 分钟，超时每次扣血 -2。',r:'uncommon',e:{timeAll:4,drainCut:2}},
+  mentorbook:{n:'导师笔记',d:'获得时最大血量 +10，药水栏位 +1。',r:'uncommon',e:{maxHp:10,slots:1}}
 };
 const RELIC_PRICE={common:140,uncommon:220,rare:320,starter:0};
 
 /* ---------- 药水 ---------- */
 const POTIONS={
-  coffee:{n:'咖啡',d:'战斗中使用：本场时限 +10 分钟。',w:3,price:55,combat:true},
-  espresso:{n:'浓缩咖啡',d:'战斗中使用：本场时限 +20 分钟。',w:1,price:95,combat:true},
-  heal:{n:'治疗药水',d:'回复 25 点 HP。',w:3,price:60},
-  insure:{n:'保险药水',d:'战斗中使用：本场即使失败也不损失HP。',w:2,price:90,combat:true},
-  partial:{n:'暴力分药水',d:'战斗中使用：本场失败时只损失一半HP。',w:2,price:60,combat:true},
+  coffee:{n:'咖啡',d:'战斗中使用：本场宽限时间 +10 分钟。',w:3,price:55,combat:true},
+  espresso:{n:'浓缩咖啡',d:'战斗中使用：本场宽限时间 +20 分钟。',w:1,price:95,combat:true},
+  heal:{n:'治疗药水',d:'回复 25 点血量。',w:3,price:60},
+  insure:{n:'保险药水',d:'战斗中使用：本场不再受超时扣血。',w:2,price:90,combat:true},
+  partial:{n:'暴力分药水',d:'战斗中使用：本场超时扣血减半。',w:2,price:60,combat:true},
   inspire:{n:'灵感药水',d:'战斗中使用：获得一条解题思路提示。',w:2,price:45,combat:true},
   lucky:{n:'幸运药水',d:'战斗中使用：本场胜利金币翻倍。',w:2,price:50,combat:true},
-  chosen:{n:'天选之子',d:'获得一件随机遗物。',w:0,price:200}
+  chosen:{n:'天选之子',d:'获得一件随机遗物。',w:0,price:200},
+  bandage:{n:'创可贴',d:'回复 15 点血量。',w:3,price:35},
+  bigheal:{n:'大治疗药水',d:'回复 50 点血量。',w:1,price:100},
+  vital:{n:'活力药水',d:'最大血量 +6，并回复 6 点。',w:1,price:90},
+  guard:{n:'护体药水',d:'战斗中使用：本场超时每次扣血 -10（至少扣 1 点）。',w:2,price:70,combat:true}
 };
 const INSPIRE=['看数据范围：n≤20 想状压，n≤500 想 O(n³)，n≤10⁵ 想 O(n log n)。','先写暴力，再找哪些重复计算可以优化。','答案是否具有单调性？试试二分答案。','正难则反：能否计算补集，或从终点倒着想？','能否用前缀和 / 差分把区间操作降到 O(1)？','贪心之前先想交换论证：交换相邻两项会不会更优？','DP 先想状态再想转移；状态里是否有冗余维度？','手玩小样例，找规律再证明（尤其是构造题）。','图论题先判断：连通？有环？是树？是 DAG？','别忘了边界：n=1、全相同、空输入、答案为 0。','取模题检查：乘法是否爆 int？减法是否出现负数？','常数优化：少取模、数组代替 map、关同步流。'];
 
@@ -320,19 +356,21 @@ function randRelic(r,owned,rarity){
 }
 const fmtTime=ms=>{ms=Math.max(0,Math.ceil(ms/1000));const m=Math.floor(ms/60),s=ms%60;return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')};
 
+const LG_TAGS={"algorithm":["语言入门","字符串","后缀自动机 SAM","字典树 Trie","AC 自动机","KMP 算法","后缀数组 SA","后缀树","有限状态自动机","回文自动机 PAM","Manacher 算法","顺序结构","分支结构","循环结构","数组","字符串（入门）","结构体","函数与递归","Lyndon 分解","Z 函数","动态规划 DP","搜索","广度优先搜索 BFS","深度优先搜索 DFS","剪枝","记忆化搜索","启发式搜索","迭代加深搜索","启发式迭代加深搜索 IDA*","Dancing Links","爬山算法 Local search","模拟退火","背包 DP","数位 DP","区间 DP","树形 DP","轮廓线 DP","线性 DP","状压 DP","后缀平衡树","数学","图论","Kruskal 重构树","网络流","信息论","随机调整","遗传算法","图论建模","图遍历","拓扑排序","最短路","生成树","平面图","最小环","A*  算法","折半搜索 meet in the middle","梯度下降法","拉格朗日乘数法","拉格朗日插值法","单位根反演","负权环","连通块","2-SAT","平面图欧拉公式","强连通分量","Tarjan","双连通分量","欧拉回路","差分约束","仙人掌","二分图","一般图的最大匹配","上下界网络流","最小割","费用流","圆方树","弦图","Floyd 算法","广义串并联图","Hall 定理","计算几何","树形数据结构","线段树","并查集","平衡树","堆","树状数组","cdq 分治","可并堆","动态树 LCT","三维计算几何","向量","凸包","叉积","线段相交","半平面交","旋转卡壳","极角排序","平面几何","闵可夫斯基和 Minkowski sum","博弈论","线性数据结构","单调队列","颜色段均摊（珂朵莉树 ODT）","树套树","可持久化线段树","可持久化","前缀和","栈","队列","博弈树","整体二分","K-D Tree","Nim 积","李超线段树","吉司机线段树 segment tree beats","线段树合并","SG 函数","二区间合并（猫树分治）","KTT / Kinetic Tournament Tree","原根","多项式","数论","素数判断","最大公约数 gcd","扩展欧几里德算法","不定方程","进制","分块","ST 表","快速傅里叶变换 FFT","快速数论变换 NTT","快速沃尔什变换 FWT","快速莫比乌斯变换 FMT","差分","链表","单调栈","Berlekamp-Massey(BM) 算法","集合幂级数，子集卷积","哈希表","模拟","贪心","基础算法","中国剩余定理 CRT","莫比乌斯反演","逆元","Lucas 定理","类欧几里得算法","调和级数","欧拉降幂","Stern-Brocot 树","整除分块","Dirichlet 卷积","大步小步算法 BSGS","二次剩余","Bézout 定理","杜教筛","欧拉函数","线性筛法","亚线性快速求和算法","递推","倍增","二分","递归","枚举","分治","排序","动态规划优化","优先队列","矩阵加速","斜率优化","状态合并","凸完全单调性（wqs 二分）","四边形不等式","DP 套 DP","动态 DP","决策单调性","STL","整体转移","斜率维护技巧 slope trick","点分治","树上启发式合并","树的遍历","最近公共祖先 LCA","树的直径","树链剖分","树论","群论","置换","Pólya 定理","虚树","组合数学","排列组合","二项式定理","康托展开","基环树","动态树分治","Prüfer 序列","全局平衡二叉树","树的重心","LGV 引理","矩阵树定理","矩阵运算","鸽笼原理","容斥原理","Fibonacci 数列","Catalan 数","Stirling 数","生成函数","概率论","期望","线性代数","矩阵乘法","线性递推","高斯消元","Dilworth 定理","拉格朗日反演","杨表","随机游走 Markov Chain","鞅的停时定理","暴力数据结构","高精度","莫队","三分","离散化","霍夫曼树","哈希 hashing","线性基","微积分","导数","积分","定积分","级数","扫描线","其它技巧","随机化","位运算","构造","行列式","特征值","分数规划","线性规划","双指针 two-pointer","Ad-hoc","笛卡尔树","拟阵","根号分治","模拟费用流","分散层叠","均摊分析","分类讨论","近似算法","线段树分治","离线处理","bitset","组合优化","整数规划","原始对偶","启发式合并","反悔贪心","最大流最小割定理","保序回归"],"source":["各省省选","集训队互测","福建省历届夏令营","NOI","NOIP 普及组","NOIP 提高组","APIO","NOI 导刊","CTT（清华集训/北大集训）","网络流与线性规划 24 题","CSP-S 提高级","CSP-J 入门级","NOI Online","Ynoi","NOI 系列赛事","经典套题","国际知名赛事","WC","CTSC/CTS","模板题","USACO","POI（波兰）","IOI","CCO（加拿大）","CCC（加拿大）","CEOI（中欧）","eJOI（欧洲）","COCI（克罗地亚）","BalticOI（波罗的海）","JOI（日本）","AGM","PA（波兰）","ROI（俄罗斯）","EGOI（欧洲/女生）","NOISG（新加坡）","NordicOI（北欧）","BalkanOI（巴尔干半岛）","KOI（韩国）","RMI（罗马尼亚）","COI（克罗地亚）","洛谷原创","ICPC","洛谷月赛","语言月赛","洛谷比赛","大学竞赛","ROIR（俄罗斯）","INOI（伊朗）","UOI（乌克兰）","JOISC/JOIST（日本）","COTS（克罗地亚）","Google Code Jam","Moscow Olympiad","PO（瑞典）","PAIO","MCC/MCO（马来西亚）","KTSC（韩国）","IATI（保加利亚/东欧）","Google Kick Start","入门赛","蓝桥杯国赛","蓝桥杯省赛","省赛/邀请赛","传智杯","THUPC","GESP","其他竞赛","THUSC","高校校赛","THUWC","CSP-X 小学组","Code+","梦熊比赛","信息与未来","科创活动","BCSP-X","小学活动","初中活动","CSPro","CCPC","科大国创杯","蓝桥杯青少年组"],"time":["1996","1997","1998","1999","2000","2001","2002","2003","2004","2005","2006","2007","2008","2009","2010","2011","2012","2013","2014","2015","2016","2017","2018","2019","2020","2021","2022","2023","2024","2025","2026","2027","2028","2029","2077","2078","2079"],"region":["重庆","四川","河南","浙江","上海","福建","江苏","安徽","湖南","北京","河北","广东","山东","吉林","山西","江西","贵州","广西","陕西","国内省市","辽宁","云南","天津","湖北","黑龙江","海南","甘肃","青海","台湾","内蒙古","西藏","宁夏","新疆","香港","澳门","济南","南京","青岛","国内赛站","EC Final","国际赛区","NERC/NEERC","SEERC","CERC","NWRRC","WF","NAC","杭州","昆明","西安","哈尔滨","首尔","横浜","SWERC","成都","雅加达"],"special":["交互题","提交答案","Special Judge","O2优化","通信题"]};
 //==UI==
 /* =====================================================================
    二、状态与存档
    ===================================================================== */
 const $app=document.getElementById('app');
-let view='menu', run=null, selDiff=1, toastTimer=null, endSeen=false;
-const LS_PROG='oi2_progress', LS_RUN='oi2_run', LS_NAME='oi2_name';
+let view='menu', run=null, selDiff=0, toastTimer=null, endSeen=false;
+let drawMode=false, penColor='#ff5252', curStroke=null, lgPanel=false;
+const LS_PROG='oi3_progress', LS_RUN='oi3_run', LS_NAME='oi2_name';
 function lsGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function lsSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
 function lsDel(k){try{localStorage.removeItem(k)}catch(e){}}
-let prog=(()=>{try{const p=JSON.parse(lsGet(LS_PROG));if(p&&p.unlocked)return p}catch(e){}return{unlocked:1,best:{},cleared:{}}})();
+let prog=(()=>{try{const p=JSON.parse(lsGet(LS_PROG));if(p&&typeof p.unlocked==='number')return p}catch(e){}return{unlocked:0,best:{},cleared:{}}})();
 function saveProg(){lsSet(LS_PROG,JSON.stringify(prog))}
-function save(){if(run){lsSet(LS_RUN,JSON.stringify(run))}syncStatus()}
+function save(){if(run&&!run.mp){lsSet(LS_RUN,JSON.stringify(run))}syncStatus()}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function toast(m){
   const old=document.querySelector('.toast');if(old)old.remove();
@@ -341,7 +379,7 @@ function toast(m){
 }
 const E=k=>run.relics.reduce((s,id)=>s+(RELICS[id].e[k]||0),0);
 const hasRelic=id=>run.relics.includes(id);
-const slotCount=()=>P(run.difficulty).slots+E('slots');
+const slotCount=()=>P(run.difficulty).slots+E('slots')+(run.extraSlots||0);
 const nodeAt=(r,c)=>run.map.nodes[r][c];
 const nodeKey=n=>run.act+'_'+n.r+'_'+n.c;
 
@@ -350,32 +388,43 @@ const nodeKey=n=>run.act+'_'+n.r+'_'+n.c;
    ===================================================================== */
 function newRun(diff,seed){
   const pr=P(diff);
-  const r={v:1,seed:String(seed),difficulty:diff,act:1,hp:pr.startMax,maxHp:pr.startMax,gold:99,
-    relics:pr.noStarter?[]:['starter'],potions:['coffee'],nextFightMs:0,shield:false,rootPending:true,rootTime:0,actBossWins:0,
+  return {v:3,seed:String(seed),difficulty:diff,act:1,hp:pr.startMax,maxHp:pr.startMax,gold:99,
+    relics:pr.noStarter?[]:['starter'],potions:['coffee'],nextFightMs:0,fightBoon:0,fightBonusMin:0,
+    extraSlots:0,actCut:0,actShopDisc:0,actTick:0,actHint:0,shieldLeft:0,freeFights:0,mp:false,deadSent:false,
     pos:null,visited:{},room:null,map:null,over:false,victory:false,
-    stats:{wins:0,fails:0,elites:0,startedAt:Date.now()}};
-  return r;
+    stats:{wins:0,drain:0,elites:0,startedAt:Date.now()}};
 }
 function startAct(){
   run.map=genMap(run.seed,run.act,run.difficulty);
-  run.pos=null;run.visited={};run.room=null;run.rootPending=true;if(run.act!==3)run.actBossWins=0;
-  run.shield=hasRelic('amulet');
+  run.map.ancient={done:false};run.map.draw=[];
+  run.pos=null;run.visited={};run.room=null;run.actCut=0;run.actShopDisc=0;run.actTick=0;run.actHint=0;
+  run.shieldLeft=E('actShield');
   if(E('actCoffee')&&run.potions.length<slotCount())run.potions.push('coffee');
   prog.best[run.difficulty]=Math.max(prog.best[run.difficulty]||0,run.act);saveProg();
   lastMapAct=null;
 }
-function startRun(diff,seed){
+function startRun(diff,seed,mp){
   if(diff>prog.unlocked){toast('该难度尚未解锁');return}
   run=newRun(diff,seed||Math.random().toString(36).slice(2,8));
+  run.mp=!!mp;curStroke=null;drawMode=false;
   startAct();save();view='game';render();
 }
 function availNodes(){
+  if(!run.map.ancient.done)return [];
   if(!run.pos)return run.map.nodes[0].filter(Boolean);
   const n=nodeAt(run.pos.r,run.pos.c);
   return n.next.map(c=>nodeAt(run.pos.r+1,c));
 }
 function enterNode(r,c){
   if(run.room||run.over||run.victory)return;
+  if(r===-1){
+    if(run.map.ancient.done)return;
+    const ra=rngFor(run.seed,'anc'+run.act);
+    const ids=BOONS.map(b=>b.id);
+    for(let i=ids.length-1;i>0;i--){const j=Math.floor(ra()*(i+1));[ids[i],ids[j]]=[ids[j],ids[i]]}
+    run.room={node:{r:-1,c:3},kind:'ancient',phase:'choose',choices:ids.slice(0,3)};
+    save();render();return;
+  }
   const n=nodeAt(r,c);
   if(!availNodes().includes(n))return;
   let type=n.type;
@@ -386,41 +435,51 @@ function enterNode(r,c){
   }
   run.room={node:{r,c},kind:type,phase:'prep'};
   if(type==='monster'||type==='elite'||type==='boss'){
-    run.room.name=type==='boss'?BOSS_NAMES[run.act-1]:pick(rr,type==='elite'?ELITE_NAMES:MONSTER_NAMES);
+    run.room.name=type==='boss'?(r>ROWS?BOSS2_NAME:BOSS_NAMES[run.act-1]):pick(rr,type==='elite'?ELITE_NAMES:MONSTER_NAMES);
     run.room.topic=pick(rr,TOPICS);
     run.room.hint=problemHint(run,type,n);
-    const base={monster:20,elite:40,boss:60}[type];
-    const bonus=E('timeAll')+E('time_'+type)+(run.rootTime||0)+run.nextFightMs/60000;
-    run.room.combat={limitMs:(base+bonus)*60000,baseMin:base,bonusMin:bonus,extraMs:0,started:false,done:false,
-      insured:false,partial:false,lucky:false,hints:[],confirm:false};
+    let bonus=E('timeAll')+E('time_'+type)+run.nextFightMs/60000;
+    if(run.fightBoon>0){bonus+=run.fightBonusMin;run.fightBoon--}
     run.nextFightMs=0;
+    run.room.combat={graceMs:(GRACE[type]+bonus)*60000,baseMin:GRACE[type],bonusMin:bonus,extraMs:0,started:false,done:false,
+      insured:false,partial:false,lucky:false,shielded:false,guard:0,ticks:0,lost:0,hints:[]};
   }else if(type==='shop'){run.room.shop=genShop(rr)}
   else if(type==='treasure'){run.room.phase='open'}
   else if(type==='rest'){run.room.phase='choose'}
   else if(type==='event'){
     const good=0.45+E('goodEvent')-P(run.difficulty).badEvent;
-    const pool=EVENTS.filter(e=>rr()<good?e.kind==='good':e.kind==='mixed');
-    run.room.event=pick(rr,pool.length?pool:EVENTS).id;
+    const wantGood=rr()<good;
+    const pool=EVENTS.filter(e=>(e.kind==='good')===wantGood);
+    run.room.event=pick(rr,pool).id;
     run.room.phase='choose';
   }
   save();render();
 }
 function leaveRoom(){
-  const n=run.room.node,isBoss=run.room.kind==='boss';
+  const rm=run.room,n=rm.node,isBoss=rm.kind==='boss';
+  let next='vote';
+  if(rm.kind==='ancient'){
+    run.map.ancient.done=true;run.room=null;save();render();
+    if(isMP())netSend({t:'done',next:'vote'});
+    return;
+  }
   run.pos={r:n.r,c:n.c};run.visited[n.r+','+n.c]=1;run.room=null;
   if(isBoss){
     if(run.act<3){
       const pr=P(run.difficulty);
-      run.hp=Math.min(run.maxHp,run.hp+Math.round((run.maxHp-run.hp)*pr.actHeal)+E('actHealFlat'));
-      run.act++;startAct();toast('进入 '+STAGE_NAMES[run.act-1]);
+      run.hp=Math.min(run.maxHp,run.hp+Math.round((run.maxHp-run.hp)*pr.actHeal));
+      run.act++;startAct();next='ancient';toast('进入 '+STAGE_NAMES[run.act-1]);
+    }else if(run.difficulty===10&&n.r===ROWS){
+      toast('第二个 Boss 出现了，没有喘息的机会。');
     }else{
-      run.victory=true;
+      run.victory=true;next='finish';
       prog.cleared[run.difficulty]=true;
       if(run.difficulty<10)prog.unlocked=Math.max(prog.unlocked,run.difficulty+1);
       saveProg();
     }
   }
   save();render();
+  if(isMP())netSend({t:'done',next});
 }
 function gainRelic(id){
   if(!id||run.relics.includes(id))return;
@@ -428,7 +487,7 @@ function gainRelic(id){
   const e=RELICS[id].e;
   if(e.maxHp){run.maxHp+=e.maxHp;run.hp+=e.maxHp}
   if(e.gold)run.gold+=e.gold;
-  if(e.actShield)run.shield=true;
+  if(e.actShield)run.shieldLeft=(run.shieldLeft||0)+e.actShield;
 }
 function addPotion(id){if(run.potions.length>=slotCount())return false;run.potions.push(id);return true}
 function givePotion(id){
@@ -444,24 +503,56 @@ function heal(n){const b=run.hp;run.hp=Math.min(run.maxHp,run.hp+n);return run.h
 
 /* ---------- 战斗 ---------- */
 const cb=()=>run&&run.room&&run.room.combat;
-const remainingMs=c=>c.limitMs+c.extraMs-(Date.now()-c.startAt);
-function chooseRoot(i){
-  if(!run.rootPending)return;
-  const boon=ROOT_BOONS[i];if(!boon)return;
-  boon.f();run.rootPending=false;save();render();
+const GRACE={monster:20,elite:40,boss:60};      // 宽限时间（分钟）
+const DRAIN={monster:10,elite:10,boss:20};      // 超时后每 5 分钟扣血（基础值）
+const tickMs=()=>(5+E('tickMin')+(run.actTick||0))*60000;
+const remainingMs=c=>c.graceMs+c.extraMs-(Date.now()-c.startAt);   // 距宽限结束，负数表示已超时
+function drainDmg(c,kind){
+  if(c.insured||c.shielded)return 0;
+  const pr=P(run.difficulty);
+  let d=DRAIN[kind]*(1+0.15*(run.act-1))*pr.failMult*(kind==='boss'?pr.bossFailMult:1)*Math.max(0.3,1+E('failMult'));
+  d=Math.round(d)-E('drainCut')-(run.actCut||0)-(c.guard||0);
+  d=Math.max(1,d);
+  if(c.partial)d=Math.max(1,Math.ceil(d/2));
+  return d;
 }
-function startCombat(){const c=cb();c.started=true;c.startAt=Date.now();c.penaltyAt=0;run.room.phase='fight';save();render()}
+function addHint(c){const left=INSPIRE.filter(h=>!c.hints.includes(h));c.hints.push(pick(Math.random,left.length?left:INSPIRE))}
+function startCombat(){
+  const c=cb();c.started=true;c.startAt=Date.now();
+  if(run.shieldLeft>0){run.shieldLeft--;c.shielded=true}
+  else if(run.freeFights>0){run.freeFights--;c.shielded=true}
+  const nh=E('autoHint')+(run.actHint||0);
+  for(let i=0;i<nh;i++)addHint(c);
+  run.room.phase='fight';save();render();
+}
+function applyOvertime(){
+  const rm=run.room,c=rm.combat,tk=tickMs();
+  const over=Date.now()-c.startAt-(c.graceMs+c.extraMs);
+  const target=over>0?Math.floor(over/tk):0;
+  let hit=0;
+  while(c.ticks<target&&!run.over){
+    c.ticks++;const d=drainDmg(c,rm.kind);
+    run.hp=Math.max(0,run.hp-d);c.lost+=d;run.stats.drain+=d;hit+=d;
+    if(run.hp<=0)run.over=true;
+  }
+  if(hit>0){
+    toast(run.over?'血量耗尽……':'超时扣血 -'+hit);save();
+    if(run.over&&isMP())sendDead();
+    render();
+  }
+}
 function winCombat(){
   const rm=run.room,c=rm.combat,pr=P(run.difficulty);
   c.done=true;rm.phase='won';run.stats.wins++;
+  if(rm.problem)lgMarkDone(rm.problem.pid);
   if(rm.kind==='elite')run.stats.elites++;
   const rr=rngFor(run.seed,'rw'+nodeKey(rm.node));
   let g=rm.kind==='boss'?ri(rr,55,75):rm.kind==='elite'?ri(rr,28,42):ri(rr,14,24);
-  g+=E('winGold');if(rm.kind==='monster')g=Math.round(g*(1+E('monsterGold')));
   g=Math.round(g*pr.goldMult*(1+E('goldMult'))*(c.lucky?2:1));
   run.gold+=g;
-  const h=E('winHeal');if(h)heal(h);
-  const rw={gold:g,heal:h,potion:null,relic:null,choices:null};
+  const h=E('winHeal');const healed=h?heal(h):0;
+  const mh=E('winMaxHp');if(mh){run.maxHp+=mh;run.hp+=mh}
+  const rw={gold:g,heal:healed,potion:null,relic:null,choices:null};
   if(rr()<(rm.kind==='monster'?0.25:0.5)+E('potionDrop'))rw.potion=randPotion(rr);
   if(rm.kind==='elite')rw.relic=randRelic(rr,run.relics);
   if(rm.kind==='boss'){
@@ -471,37 +562,22 @@ function winCombat(){
   }
   rm.rewards=rw;save();render();
 }
-function failCombat(reason){
-  const rm=run.room,c=rm.combat;
-  c.done=true;c.reason=reason;run.stats.fails++;
-  let d=damage({monster:12,elite:22,boss:35}[rm.kind],rm.kind==='boss'),note='';
-  if(c.insured){d=0;note='保险药水生效。'}
-  else if(run.shield){run.shield=false;d=0;note='自动机护符挡下了这次失败。'}
-  else if(c.partial){d=Math.round(d/2);note='暴力分药水生效，损失减半。'}
-  run.hp=Math.max(0,run.hp-d);if(E('failHeal'))heal(E('failHeal'));rm.lost=d;rm.note=note;rm.phase='lost';
-  if(run.hp<=0){run.over=true}
-  save();render();
-}
-function retryBoss(){
-  const rm=run.room,c=rm.combat;
-  rm.combat={limitMs:c.limitMs,baseMin:c.baseMin,bonusMin:c.bonusMin,extraMs:0,started:false,done:false,insured:false,partial:false,lucky:false,hints:[],confirm:false};
-  rm.phase='prep';rm.lost=0;save();render();
-}
 function usePotion(i){
   const id=run.potions[i];if(!id)return;
   const def=POTIONS[id],c=cb();
   if(def.combat&&!(c&&c.started&&!c.done)){toast('这瓶药水只能在战斗计时中使用');return}
-  let msg='';
-  if(id==='coffee'){c.extraMs+=10*60000;msg='时限 +10 分钟'}
-  else if(id==='espresso'){c.extraMs+=20*60000;msg='时限 +20 分钟'}
-  else if(id==='heal'){msg='回复 '+heal(25)+' 点HP'}
-  else if(id==='insure'){c.insured=true;msg='本场失败不再损失HP'}
-  else if(id==='partial'){c.partial=true;msg='本场失败只损失一半HP'}
+  let msg='';const ph=E('potionHeal');
+  if(id==='coffee'){c.extraMs+=10*60000;msg='宽限时间 +10 分钟'}
+  else if(id==='espresso'){c.extraMs+=20*60000;msg='宽限时间 +20 分钟'}
+  else if(id==='bandage'){msg='回复 '+heal(15+ph)+' 点血量'}
+  else if(id==='heal'){msg='回复 '+heal(25+ph)+' 点血量'}
+  else if(id==='bigheal'){msg='回复 '+heal(50+ph)+' 点血量'}
+  else if(id==='vital'){run.maxHp+=6;run.hp+=6;msg='最大血量 +6'}
+  else if(id==='guard'){c.guard=(c.guard||0)+10;msg='本场超时每次扣血 -10'}
+  else if(id==='insure'){c.insured=true;msg='本场不再受超时扣血'}
+  else if(id==='partial'){c.partial=true;msg='本场超时扣血减半'}
   else if(id==='lucky'){c.lucky=true;msg='本场金币翻倍'}
-  else if(id==='inspire'){
-    const left=INSPIRE.filter(h=>!c.hints.includes(h));
-    const h=pick(Math.random,left.length?left:INSPIRE);c.hints.push(h);msg='获得一条提示'
-  }
+  else if(id==='inspire'){addHint(c);msg='获得一条提示'}
   else if(id==='chosen'){const x=randRelic(Math.random,run.relics);if(x){gainRelic(x);msg='获得遗物：'+RELICS[x].n}else msg='已拥有全部遗物'}
   run.potions.splice(i,1);toast(def.n+'：'+msg);save();render();
 }
@@ -510,7 +586,7 @@ function dropPotion(i){run.potions.splice(i,1);save();render()}
 /* ---------- 商店 ---------- */
 function genShop(rr){
   const pr=P(run.difficulty);
-  const f=(1-E('shopDiscount'))*pr.shopMult;
+  const f=Math.max(0.3,1-E('shopDiscount')-(run.actShopDisc||0))*pr.shopMult;
   const items=[];let tmp=run.relics.slice();
   for(let i=0;i<3;i++){
     const id=randRelic(rr,tmp,i===2?(rr()<0.5?'uncommon':null):null)||randRelic(rr,tmp);
@@ -536,9 +612,9 @@ function buy(i){
 /* ---------- 休息 / 宝箱 / 事件 ---------- */
 function rest(kind){
   const rm=run.room;
-  if(kind==='sleep'){const n=heal(Math.round(run.maxHp*P(run.difficulty).restPct)+E('restHeal'));rm.result='睡了一觉，回复 '+n+' 点HP。'}
+  if(kind==='sleep'){const n=heal(Math.round(run.maxHp*P(run.difficulty).restPct)+E('restHeal'));rm.result='睡了一觉，回复 '+n+' 点血量。'}
   else if(kind==='drill'){run.nextFightMs+=10*60000;rm.result='你做了几道板子。下一场战斗时限 +10 分钟。'}
-  else{rm.result=givePotion(randPotion(Math.random))}
+  else{const k=1+(E('restPotion')||0);rm.result=Array.from({length:k},()=>givePotion(randPotion(Math.random))).join(' ')}
   rm.phase='result';save();render();
 }
 function openChest(){
@@ -549,49 +625,140 @@ function openChest(){
   rm.result=(id?'宝箱里有遗物「'+RELICS[id].n+'」，'+RELICS[id].d+' ':'')+'另外获得 '+g+' 金币。';
   rm.phase='result';save();render();
 }
+const hurt=n=>{run.hp=Math.max(1,run.hp-n)};
 const EVENTS=[
   {id:'oj',kind:'good',title:'OJ 加急通道',text:'评测队列出奇地空，管理员给了你一个福利入口。',opts:[
     {t:'领取补给金（+80 金币）',f:()=>{run.gold+=80;return '获得 80 金币。'}},
     {t:'领取一瓶药水',f:r=>givePotion(randPotion(r))}]},
   {id:'senior',kind:'good',title:'神秘学长',text:'一位学长路过你的机位，看了眼屏幕，递来一杯饮料。',opts:[
     {t:'收下药水',f:r=>givePotion(randPotion(r))},
-    {t:'请教问题（最大HP +5）',f:()=>{run.maxHp+=5;run.hp+=5;return '最大HP +5。'}}]},
+    {t:'请教问题（最大血量 +5）',f:()=>{run.maxHp+=5;run.hp+=5;return '最大血量 +5。'}}]},
   {id:'stall',kind:'good',title:'药水摊',text:'走廊里有人在摆摊，两瓶药水可以免费选一瓶。',opts:null,dyn:r=>{
     const a=randPotion(r),b=randPotion(r);
     return [a,b].map(id=>({t:'选择「'+POTIONS[id].n+'」：'+POTIONS[id].d,f:()=>givePotion(id)}))}},
+  {id:'coffeeshop',kind:'good',title:'楼下咖啡店',text:'店员认出你是常客，说今天的第一杯免单。',opts:[
+    {t:'带走一杯咖啡（获得咖啡药水）',f:()=>givePotion('coffee')},
+    {t:'坐下喝完（回复 15 点血量）',f:()=>'回复 '+heal(15)+' 点血量。'}]},
+  {id:'cat',kind:'good',title:'机房的猫',text:'一只猫趴在你的键盘上，一动不动。',opts:[
+    {t:'摸摸它（回复 12 点血量）',f:()=>'回复 '+heal(12)+' 点血量。'},
+    {t:'喂它小鱼干（-30 金币，最大血量 +8）',need:30,f:()=>{run.gold-=30;run.maxHp+=8;run.hp+=8;return '猫蹭了蹭你的手。最大血量 +8。'}}]},
+  {id:'whiteboard',kind:'good',title:'白板',text:'白板上留着前人没擦掉的推导，字迹还很清楚。',opts:[
+    {t:'认真看完（接下来 3 场战斗宽限时间 +8 分钟）',f:()=>{run.fightBoon=3;run.fightBonusMin=8;return '接下来 3 场战斗宽限时间 +8 分钟。'}},
+    {t:'拍照带走（+90 金币）',f:()=>{run.gold+=90;return '获得 90 金币。'}}]},
+  {id:'vending',kind:'good',title:'自动售货机',text:'走廊尽头的售货机亮着灯，投币口有点松。',opts:[
+    {t:'投币（-20 金币，获得随机药水）',need:20,f:r=>{run.gold-=20;return givePotion(randPotion(r))}},
+    {t:'用力摇晃（50%：两瓶药水；50%：-5 血量）',f:r=>{if(r()<0.5)return givePotion(randPotion(r))+' '+givePotion(randPotion(r));hurt(5);return '机器砸到了你的脚，损失 5 点血量。'}}]},
+  {id:'trainer',kind:'good',title:'集训队教练',text:'教练看了看你的提交记录，递给你一份训练计划。',opts:[
+    {t:'照着训练（最大血量 +6，并回复 6 点）',f:()=>{run.maxHp+=6;run.hp+=6;return '最大血量 +6。'}},
+    {t:'换一个大书包（药水栏位 +1）',f:()=>{run.extraSlots=(run.extraSlots||0)+1;return '药水栏位 +1。'}}]},
   {id:'night',kind:'mixed',title:'半夜的灵感',text:'凌晨三点，你突然看懂了一类题的本质。但明天还要比赛。',opts:[
-    {t:'继续熬夜（-10 HP，获得一件遗物）',f:r=>{if(run.hp<=10)return 'HP太低，撑不住了，你还是睡了。';run.hp-=10;const x=randRelic(r,run.relics);if(x){gainRelic(x);return '损失 10 HP，获得遗物「'+RELICS[x].n+'」。'}return '损失 10 HP，但没有新遗物了。'}},
-    {t:'去睡觉（回复 15 HP）',f:()=>'回复 '+heal(15)+' 点HP。'}]},
+    {t:'继续熬夜（-10 血量，获得一件遗物）',f:r=>{if(run.hp<=10)return '血量太低，撑不住了，你还是睡了。';hurt(10);const x=randRelic(r,run.relics);if(x){gainRelic(x);return '损失 10 点血量，获得遗物「'+RELICS[x].n+'」。'}return '损失 10 点血量，但没有新遗物了。'}},
+    {t:'去睡觉（回复 15 点血量）',f:()=>'回复 '+heal(15)+' 点血量。'}]},
   {id:'judge',kind:'mixed',title:'评测机卡死',text:'你的提交已经排了很久，状态还停在 Waiting。',opts:[
-    {t:'重新提交（50%：+120 金币；50%：-12 HP）',f:r=>{if(r()<0.5){run.gold+=120;return '这次评测通过了，获得 120 金币。'}run.hp=Math.max(1,run.hp-12);return '评测机又崩了，损失 12 HP。'}},
-    {t:'去喝水，等一会（回复 5 HP）',f:()=>'回复 '+heal(5)+' 点HP。'}]},
+    {t:'重新提交（50%：+120 金币；50%：-12 血量）',f:r=>{if(r()<0.5){run.gold+=120;return '这次评测通过了，获得 120 金币。'}hurt(12);return '评测机又崩了，损失 12 点血量。'}},
+    {t:'去喝水，等一会（回复 5 点血量）',f:()=>'回复 '+heal(5)+' 点血量。'}]},
   {id:'trade',kind:'mixed',title:'交易区',text:'有人悄悄说，他手里有一件好东西，要价 60 金币。',opts:[
     {t:'购买（60 金币，获得随机遗物）',need:60,f:r=>{run.gold-=60;const x=randRelic(r,run.relics,'uncommon')||randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}run.gold+=60;return '他手里已经没有你缺的东西了，退回了金币。'}},
     {t:'离开',f:()=>'你没有理会。'}]},
   {id:'hack',kind:'mixed',title:'Hack 机会',text:'你在别人的代码里看到一个明显的边界漏洞。',opts:[
-    {t:'提交 Hack（60%：+100 金币；40%：-15 HP）',f:r=>{if(r()<0.6){run.gold+=100;return 'Hack 成功，获得 100 金币。'}run.hp=Math.max(1,run.hp-15);return '数据不合法，Hack 失败，损失 15 HP。'}},
+    {t:'提交 Hack（60%：+100 金币；40%：-15 血量）',f:r=>{if(r()<0.6){run.gold+=100;return 'Hack 成功，获得 100 金币。'}hurt(15);return '数据不合法，Hack 失败，损失 15 点血量。'}},
     {t:'算了',f:()=>'你把精力留给了自己的题。'}]},
-  {id:'archive',kind:'good',title:'古老题库',text:'先古移民留下了一份整理完备的题单。',opts:[
-    {t:'领取 60 金币',f:()=>{run.gold+=60;return '获得 60 金币。'}},
-    {t:'恢复 18 HP',f:()=>'恢复 '+heal(18)+' HP。'}]},
-  {id:'blackout',kind:'mixed',title:'机房停电',text:'机房突然断电，备用电源正在切换。',opts:[
-    {t:'检查设备（获得随机遗物）',f:r=>{const x=randRelic(r,run.relics);if(x){gainRelic(x);return '找到遗物「'+RELICS[x].n+'」。'}return '没有找到新的遗物。'}},
-    {t:'原地等待（回复 8 HP）',f:()=>'回复 '+heal(8)+' HP。'}]},
-  {id:'mentor',kind:'good',title:'退役选手',text:'一位退役选手分享了自己的比赛经验。',opts:[
-    {t:'听取建议（最大 HP +8）',f:()=>{run.maxHp+=8;run.hp+=8;return '最大 HP +8。'}},
-    {t:'领取一瓶治疗药水',f:()=>givePotion('heal')}]},
-  {id:'altar',kind:'mixed',title:'先祖祭坛',text:'祭坛上有两枚刻着古老符号的石片。',opts:[
-    {t:'献上 40 金币，获得随机遗物',need:40,f:r=>{run.gold-=40;const x=randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}run.gold+=40;return '没有可获得的新遗物，金币已退还。'}},
-    {t:'触摸石片（回复 12 HP）',f:()=>'回复 '+heal(12)+' HP。'}]}
+  {id:'mock',kind:'mixed',title:'校内模拟赛',text:'有人拉你临时凑一场模拟赛，排名靠前有奖。',opts:[
+    {t:'参加（-10 血量，+100 金币并获得一瓶药水）',f:r=>{if(run.hp<=10)return '血量太低，你没有参加。';hurt(10);run.gold+=100;return '损失 10 点血量，获得 100 金币。'+givePotion(randPotion(r))}},
+    {t:'不参加',f:()=>'你选择专心准备正赛。'}]},
+  {id:'power',kind:'mixed',title:'机房停电',text:'整栋楼突然黑了，你的代码还没保存。',opts:[
+    {t:'去买泡面（-20 金币，回复 20 点血量）',need:20,f:()=>{run.gold-=20;return '花了 20 金币，回复 '+heal(20)+' 点血量。'}},
+    {t:'摸黑继续写（-6 血量，获得一瓶药水）',f:r=>{hurt(6);return '损失 6 点血量。'+givePotion(randPotion(r))}}]},
+  {id:'vendor',kind:'mixed',title:'无良商贩',text:'一个人悄悄向你推销「保证 AC 的符咒」，开价 100 金币。',opts:[
+    {t:'买下（-100 金币，获得 2 瓶保险药水）',need:100,f:()=>{run.gold-=100;return givePotion('insure')+' '+givePotion('insure')}},
+    {t:'举报他（+40 金币）',f:()=>{run.gold+=40;return '管理员奖励了你 40 金币。'}}]},
+  {id:'contest',kind:'mixed',title:'校内选拔',text:'报名费 40 金币，据说前几名有神秘奖励。',opts:[
+    {t:'报名（-40 金币；55%：遗物，45%：药水）',need:40,f:r=>{run.gold-=40;if(r()<0.55){const x=randRelic(r,run.relics,'uncommon')||randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}}return givePotion(randPotion(r))}},
+    {t:'不报名',f:()=>'你没有去。'}]},
+  {id:'ghost',kind:'mixed',title:'学长的幽灵',text:'你在机房角落看见一个半透明的身影，他说想考考你。',opts:[
+    {t:'接受试炼（-15 血量，最大血量 +10）',f:()=>{if(run.hp<=15)return '血量太低，幽灵摇了摇头。';hurt(15);run.maxHp+=10;run.hp+=10;return '最大血量 +10。'}},
+    {t:'拒绝',f:()=>'幽灵叹了口气，消失了。'}]},
+  {id:'oldcode',kind:'mixed',title:'祖传代码',text:'你翻到一份几年前的 AC 代码，注释写着「别动，能跑」。',opts:[
+    {t:'直接提交（50%：+150 金币；50%：-18 血量）',f:r=>{if(r()<0.5){run.gold+=150;return '居然过了，获得 150 金币。'}hurt(18);return '数据早就变了，损失 18 点血量。'}},
+    {t:'自己重写（+20 金币）',f:()=>{run.gold+=20;return '你重写了一遍，顺手卖了份笔记，获得 20 金币。'}}]},
+  {id:'altar',kind:'mixed',title:'算法祭坛',text:'祭坛上刻着一行小字：献上药水，换取一件遗物。',opts:[
+    {t:'献祭一瓶药水（换取随机遗物）',needPot:true,f:r=>{const p=run.potions.pop();const x=randRelic(r,run.relics,'uncommon')||randRelic(r,run.relics);if(x){gainRelic(x);return '献出「'+POTIONS[p].n+'」，获得遗物「'+RELICS[x].n+'」。'}run.potions.push(p);return '祭坛没有回应。'}},
+    {t:'离开',f:()=>'你没有碰它。'}]},
+  {id:'sponsor',kind:'good',title:'赞助商',text:'一家公司想在你的机位贴广告，开价不低。',opts:[
+    {t:'接受赞助（+200 金币）',f:()=>{run.gold+=200;return '获得 200 金币。'}},
+    {t:'要一件周边（获得随机遗物）',f:r=>{const x=randRelic(r,run.relics,'uncommon')||randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}return '周边卖完了。'}}]},
+  {id:'masterclass',kind:'good',title:'大师课',text:'退役的国家队选手在机房开了一堂免费的课。',opts:[
+    {t:'认真听（接下来 5 场战斗宽限时间 +10 分钟）',f:()=>{run.fightBoon=5;run.fightBonusMin=10;return '接下来 5 场战斗宽限时间 +10 分钟。'}},
+    {t:'课后请教（最大血量 +10）',f:()=>{run.maxHp+=10;run.hp+=10;return '最大血量 +10。'}}]},
+  {id:'checkup',kind:'good',title:'校医室体检',text:'校医看了你的黑眼圈，皱了皱眉。',opts:[
+    {t:'接受治疗（回满血量）',f:()=>'回复 '+heal(run.maxHp)+' 点血量。'},
+    {t:'领一份营养剂（最大血量 +8）',f:()=>{run.maxHp+=8;run.hp+=8;return '最大血量 +8。'}}]},
+  {id:'bugfound',kind:'good',title:'官方数据有误',text:'你发现题目数据有个小错误，管理员向你道谢。',opts:[
+    {t:'领取奖励（获得随机遗物）',f:r=>{const x=randRelic(r,run.relics,'common')||randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}return '没有可给的遗物了。'}},
+    {t:'领取奖金（+100 金币）',f:()=>{run.gold+=100;return '获得 100 金币。'}}]},
+  {id:'mentor',kind:'good',title:'热心的导师',text:'一位导师把自己多余的东西都塞给了你。',opts:[
+    {t:'收下药水（获得 2 瓶药水）',f:r=>givePotion(randPotion(r))+' '+givePotion(randPotion(r))},
+    {t:'收下背包（药水栏位 +1）',f:()=>{run.extraSlots=(run.extraSlots||0)+1;return '药水栏位 +1。'}}]},
+  {id:'lostfound',kind:'good',title:'失物招领',text:'机房门口的失物招领箱里，有几样东西没人认领。',opts:[
+    {t:'拿走一件遗物',f:r=>{const x=randRelic(r,run.relics,'common')||randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}return '箱子是空的。'}},
+    {t:'拿走现金（+120 金币）',f:()=>{run.gold+=120;return '获得 120 金币。'}}]},
+  {id:'teammate',kind:'good',title:'队友的包裹',text:'同学帮你代收了一个快递，里面是给你准备的补给。',opts:[
+    {t:'拆开（2 瓶药水 + 50 金币）',f:r=>{run.gold+=50;return '获得 50 金币。'+givePotion(randPotion(r))+' '+givePotion(randPotion(r))}},
+    {t:'只拿遗物（获得随机遗物）',f:r=>{const x=randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}return '没有可给的遗物了。'}}]},
+  {id:'lottery',kind:'mixed',title:'幸运抽奖',text:'校门口有人摆了个抽奖转盘，一次 30 金币。',opts:[
+    {t:'抽一次（-30 金币；40% 稀有遗物，60% 两瓶药水）',need:30,f:r=>{run.gold-=30;if(r()<0.4){const x=randRelic(r,run.relics,'rare')||randRelic(r,run.relics);if(x){gainRelic(x);return '中了大奖，获得遗物「'+RELICS[x].n+'」。'}}return givePotion(randPotion(r))+' '+givePotion(randPotion(r))}},
+    {t:'不抽',f:()=>'你没有被诱惑。'}]},
+  {id:'allnight',kind:'mixed',title:'通宵赶工',text:'截止前一晚，你有一份代码要重构。',opts:[
+    {t:'通宵（-20 血量，获得稀有遗物）',f:r=>{if(run.hp<=20)return '血量太低，你只能去睡觉。';hurt(20);const x=randRelic(r,run.relics,'rare')||randRelic(r,run.relics);if(x){gainRelic(x);return '损失 20 点血量，获得遗物「'+RELICS[x].n+'」。'}return '损失 20 点血量，什么也没得到。'}},
+    {t:'早点睡（回复 10 点血量）',f:()=>'回复 '+heal(10)+' 点血量。'}]},
+  {id:'blackmarket',kind:'mixed',title:'黑市',text:'后巷里有人低声报价：一件稀有货，150 金币。',opts:[
+    {t:'购买（-150 金币，获得稀有遗物）',need:150,f:r=>{run.gold-=150;const x=randRelic(r,run.relics,'rare')||randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}run.gold+=150;return '货已经卖光了，退回了金币。'}},
+    {t:'走开',f:()=>'你转身离开。'}]},
+  {id:'wishing',kind:'mixed',title:'许愿池',text:'操场边有个池子，池底有不少硬币。',opts:[
+    {t:'投 50 金币许愿（回满血量，最大血量 +5）',need:50,f:()=>{run.gold-=50;run.maxHp+=5;run.hp=run.maxHp;return '你的血量完全恢复，最大血量 +5。'}},
+    {t:'捞几枚硬币（+30 金币，-5 血量）',f:()=>{hurt(5);run.gold+=30;return '获得 30 金币，损失 5 点血量。'}}]},
+  {id:'refactor',kind:'mixed',title:'整理笔记',text:'你整理出一套提升效率的笔记，但需要付出一些代价。',opts:[
+    {t:'投入精力（-15 血量；本阶段超时每次扣血 -5）',f:()=>{if(run.hp<=15)return '血量太低，你没能完成整理。';hurt(15);run.actCut=(run.actCut||0)+5;return '本阶段超时每次扣血 -5。'}},
+    {t:'随便翻翻',f:()=>'没什么收获。'}]},
+  {id:'hourglassman',kind:'mixed',title:'沙漏商人',text:'商人手里拿着一只沙漏，说它能让时间慢一点。',opts:[
+    {t:'购买沙漏（-120 金币，获得遗物「沙漏」）',need:120,f:()=>{if(run.relics.includes('hourglass'))return '你已经有沙漏了。';run.gold-=120;gainRelic('hourglass');return '获得遗物「沙漏」。'}},
+    {t:'算了',f:()=>'你没有买。'}]}
+];
+/* 先古遗民：每座塔塔底，三选一 */
+const BOONS=[
+  {id:'hp',n:'生命涌动',d:'最大血量 +15，并回复 15 点。',f:()=>{run.maxHp+=15;run.hp+=15}},
+  {id:'gold',n:'行囊',d:'获得 150 金币。',f:()=>{run.gold+=150}},
+  {id:'relic',n:'旧物',d:'获得一件随机普通遗物。',f:r=>{const x=randRelic(r,run.relics,'common')||randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}return '没有可给的遗物了。'}},
+  {id:'rare',n:'传家宝',d:'获得一件随机稀有或罕见遗物。',f:r=>{const x=randRelic(r,run.relics,r()<0.4?'rare':'uncommon')||randRelic(r,run.relics);if(x){gainRelic(x);return '获得遗物「'+RELICS[x].n+'」。'}return '没有可给的遗物了。'}},
+  {id:'potions',n:'药水箱',d:'获得 3 瓶随机药水。',f:r=>[0,1,2].map(()=>givePotion(randPotion(r))).join(' ')},
+  {id:'full',n:'整装待发',d:'回满血量，最大血量 +6。',f:()=>{run.maxHp+=6;run.hp=run.maxHp}},
+  {id:'grace',n:'先古的耐心',d:'接下来 3 场战斗宽限时间 +8 分钟。',f:()=>{run.fightBoon=3;run.fightBonusMin=8}},
+  {id:'slot',n:'扩容',d:'药水栏位 +1。',f:()=>{run.extraSlots=(run.extraSlots||0)+1}},
+  {id:'cut',n:'坚韧',d:'本阶段内，超时每次扣血 -5。',f:()=>{run.actCut=(run.actCut||0)+5}},
+  {id:'shop',n:'商会推荐信',d:'本阶段内，商店价格 -30%。',f:()=>{run.actShopDisc=0.3}},
+  {id:'aid',n:'急救包',d:'获得大治疗药水与创可贴各一瓶。',f:()=>givePotion('bigheal')+' '+givePotion('bandage')},
+  {id:'kit',n:'提神套装',d:'获得 2 杯咖啡和一瓶灵感药水。',f:()=>[givePotion('coffee'),givePotion('coffee'),givePotion('inspire')].join(' ')},
+  {id:'tick',n:'先古的沙漏',d:'本阶段内，超时扣血的间隔 +2 分钟。',f:()=>{run.actTick=(run.actTick||0)+2}},
+  {id:'free',n:'先古的庇护',d:'接下来 3 场战斗不受超时扣血。',f:()=>{run.freeFights=(run.freeFights||0)+3}},
+  {id:'two',n:'双重馈赠',d:'获得两件随机普通遗物。',f:r=>{const out=[];for(let i=0;i<2;i++){const x=randRelic(r,run.relics,'common')||randRelic(r,run.relics);if(x){gainRelic(x);out.push('「'+RELICS[x].n+'」')}}return out.length?'获得遗物 '+out.join('、')+'。':'没有可给的遗物了。'}},
+  {id:'hp2',n:'不朽之躯',d:'最大血量 +30，并回复 30 点。',f:()=>{run.maxHp+=30;run.hp+=30}},
+  {id:'sage',n:'先古的智慧',d:'本阶段内，每场战斗开始时自动获得一条解题思路提示。',f:()=>{run.actHint=(run.actHint||0)+1}},
+  {id:'rich',n:'先古的宝库',d:'获得 250 金币。',f:()=>{run.gold+=250}}
 ];
 function eventChoose(i){
   const rm=run.room,ev=EVENTS.find(e=>e.id===rm.event);
   const rr=rngFor(run.seed,'ev'+nodeKey(rm.node)+'_'+i);
   const opts=ev.dyn?ev.dyn(rngFor(run.seed,'evd'+nodeKey(rm.node))):ev.opts;
-  const o=opts[i];if(o.need&&run.gold<o.need)return;
-  rm.result=o.f(rr);rm.phase='result';
-  if(run.hp<=0)run.over=true;
-  save();render();
+  const o=opts[i];if(!o||(o.need&&run.gold<o.need)||(o.needPot&&!run.potions.length))return;
+  rm.result=o.f(rr);
+  const eg=E('eventGold');if(eg){run.gold+=eg;rm.result+=' 祖传 U 盘：+'+eg+' 金币。'}
+  rm.phase='result';save();render();
+}
+function ancientPick(i){
+  const rm=run.room,b=BOONS.find(x=>x.id===rm.choices[i]);
+  const rr=rngFor(run.seed,'ancb'+run.act+'_'+i);
+  const m=b.f(rr);
+  rm.result=b.n+'：'+(m||b.d);rm.phase='result';save();render();
 }
 function claim(what,idx){
   const rw=run.room.rewards;
@@ -606,7 +773,7 @@ function claim(what,idx){
 /* =====================================================================
    四、联机（WebSocket 房间）
    ===================================================================== */
-const net={ws:null,connected:false,id:null,room:'',host:null,members:{},started:false,config:null,chat:[],err:'',spectate:false,url:''};
+const net={ws:null,connected:false,id:null,room:'',host:null,members:{},started:false,config:null,chat:[],err:'',spectate:false,url:'',g:null};
 function defaultWs(){
   if(location.protocol==='http:'||location.protocol==='https:')return (location.protocol==='https:'?'wss://':'ws://')+location.host;
   return 'ws://localhost:8787';
@@ -635,26 +802,40 @@ function netConnect(url,room,name){
   ws.onclose=()=>{if(net.ws===ws){net.connected=false;net.members={};if(!net.err)net.err='连接已断开';render()}};
   ws.onmessage=ev=>{let m;try{m=JSON.parse(ev.data)}catch(e){return}onNet(m)};
 }
-function netLeave(){if(net.ws){try{net.ws.close()}catch(e){}}net.ws=null;net.connected=false;net.members={};net.started=false;net.chat=[];net.err='';net.spectate=false;render()}
+function netLeave(){if(net.ws){try{net.ws.close()}catch(e){}}net.ws=null;net.connected=false;net.members={};net.started=false;net.chat=[];net.err='';net.spectate=false;net.g=null;render()}
 function setMembers(list){
   const old=net.members;net.members={};
   list.forEach(m=>{net.members[m.id]={name:m.name,s:m.s||(old[m.id]&&old[m.id].s)||null,at:Date.now()}});
 }
 function onNet(m){
   if(m.t==='joined'){
-    net.connected=true;net.id=m.you;net.room=m.room;net.host=m.host;net.started=m.started;net.config=m.config;net.chat=[];net.spectate=false;
+    net.connected=true;net.id=m.you;net.room=m.room;net.host=m.host;net.started=m.started;net.config=m.config;net.g=m.g||null;net.chat=[];
+    net.spectate=!!m.started;
     setMembers(m.members);view='lobby';syncStatus();render();
   }else if(m.t==='members'){net.host=m.host;setMembers(m.members);renderSide();if(view==='lobby')render()}
   else if(m.t==='status'){if(net.members[m.id]){net.members[m.id].s=m.s;net.members[m.id].at=Date.now()}renderSide()}
   else if(m.t==='chat'){net.chat.push({n:m.name,x:m.text});if(net.chat.length>80)net.chat.shift();renderSide()}
   else if(m.t==='start'){
-    net.started=true;net.config=m.config;
-    if(m.config.difficulty>prog.unlocked){net.spectate=true;view='lobby';render();toast('你尚未解锁难度 '+m.config.difficulty+'，本局只能观战')}
-    else{net.spectate=false;startRun(m.config.difficulty,m.config.seed);toast('对局开始，难度 '+m.config.difficulty+'，种子 '+m.config.seed)}
-  }else if(m.t==='lobby'){net.started=false;if(view==='game'&&(run&&(run.over||run.victory)))view='lobby';render()}
+    net.started=true;net.config=m.config;net.g=null;
+    if(m.config.difficulty>prog.unlocked){net.spectate=true;netSend({t:'spectate'});view='lobby';render();toast('你尚未解锁难度 '+m.config.difficulty+'，本局只能观战')}
+    else{net.spectate=false;startRun(m.config.difficulty,m.config.seed,true);toast('对局开始：难度 '+m.config.difficulty+'，种子 '+m.config.seed)}
+  }
+  else if(m.t==='g'){net.g=m.g;if(view==='game')render();else renderSide()}
+  else if(m.t==='go'){
+    if(isMP()&&!run.over&&!run.victory&&!run.room){view='game';enterNode(m.r,m.c)}
+  }
+  else if(m.t==='lobby'){net.started=false;net.g=null;net.spectate=false;if(run&&run.mp){run.mp=false}view='lobby';render()}
+  else if(m.t==='finished'){toast('全队通关！');render()}
+  else if(m.t==='wiped'){toast('全队倒下了……');render()}
   else if(m.t==='gift'){
-    if(run&&!run.over&&!run.victory){const msg=givePotion(m.potion);toast(m.name+' 送来了「'+POTIONS[m.potion].n+'」。'+msg);save();render()}
-  }else if(m.t==='error'){net.err=m.msg;toast(m.msg);if(!net.connected)render()}
+    if(run&&!run.over&&!run.victory){const msg=givePotion(m.potion);toast(m.name+' 送来了「'+(POTIONS[m.potion]?POTIONS[m.potion].n:'药水')+'」。'+msg);save();render()}
+  }
+  else if(m.t==='draw'){
+    if(run&&run.map&&run.map.draw&&m.act===run.act&&m.stroke&&Array.isArray(m.stroke.p)){run.map.draw.push({id:m.stroke.id,by:m.from,c:String(m.stroke.c).slice(0,9),p:m.stroke.p});redrawLayer()}
+  }
+  else if(m.t==='drawundo'){if(run&&run.map&&m.act===run.act){run.map.draw=run.map.draw.filter(x=>x.id!==m.id||x.by!==m.from);redrawLayer()}}
+  else if(m.t==='drawclear'){if(run&&run.map&&m.act===run.act){run.map.draw=run.map.draw.filter(x=>x.by!==m.from);redrawLayer()}}
+  else if(m.t==='error'){net.err=m.msg;toast(m.msg);if(!net.connected)render()}
 }
 function giftPotion(toId){
   const sel=document.getElementById('gift_'+toId);if(!sel||sel.value==='')return;
@@ -665,8 +846,8 @@ function giftPotion(toId){
 /* =====================================================================
    五、界面渲染
    ===================================================================== */
-const KIND_NAME={monster:'小怪',elite:'精英',boss:'Boss',unknown:'未知',rest:'休息处',shop:'商店',treasure:'宝箱',event:'未知事件'};
-const KIND_GLYPH={monster:'怪',elite:'精',boss:'魔',unknown:'?',rest:'休',shop:'店',treasure:'宝'};
+const KIND_NAME={ancient:'先古遗民',monster:'小怪',elite:'精英',boss:'Boss',unknown:'未知',rest:'休息处',shop:'商店',treasure:'宝箱',event:'未知事件'};
+const KIND_GLYPH={ancient:'古',monster:'怪',elite:'精',boss:'魔',unknown:'?',rest:'休',shop:'店',treasure:'宝'};
 let lastMapAct=null, mapScroll=0;
 function withPreserve(fn){
   const vals={};let focus=null,ss=0,se=0;
@@ -686,6 +867,7 @@ function render(){
     else if(view==='lobby')$app.innerHTML=lobbyHTML();
     else if(view==='game'&&run)$app.innerHTML=gameHTML();
     else $app.innerHTML=menuHTML();
+    if(lgPanel&&view!=='game')$app.insertAdjacentHTML('beforeend',lgPanelHTML());
   });
   const mw=document.getElementById('mapwrap');
   if(mw){
@@ -704,11 +886,12 @@ function menuHTML(){
   const saved=lsGet(LS_RUN);
   return `<div class="menu">
     <div class="logo">OI 尖塔 <span>II</span></div>
-    <p class="tagline">把每一场战斗，换成一道题。小怪 20 分钟、精英 40 分钟、Boss 60 分钟；超时后每 5 分钟分别扣除 10、10、20 HP。</p>
+    <p class="tagline">把每一场战斗，换成一道题。宽限时间：小怪 20 分钟，精英 40 分钟，Boss 60 分钟；超时后每 5 分钟扣血。</p>
     <div class="menu-btns">
       ${saved?'<button class="primary" data-a="continue">继续上次的爬塔</button>':''}
       <button class="${saved?'':'primary'}" data-a="goSelect">单人爬塔</button>
       <button data-a="goLobby">多人联机</button>
+      <button data-a="lgPanel">题库设置</button>
       <button data-a="goRules">规则说明</button>
     </div>
     <div class="legend-row">
@@ -720,29 +903,31 @@ function menuHTML(){
 function rulesHTML(){
   return `<div class="wrap"><div class="panel" style="display:flex;flex-direction:column;gap:10px;max-width:760px;margin:20px auto">
     <h2>规则说明</h2>
-    <p><b>目标</b>：每个难度有 3 个阶段，每个阶段是一张 15 层的地图，尽头是 Boss。击败三个阶段的 Boss 即通关该难度；难度 10 的第三阶段还需连续击败两位 Boss，并解锁下一难度。</p>
-    <p><b>战斗</b>：进入战斗房间后，页面会告诉你需要挑选的题目难度颜色。你自己在 OJ 上选一道题，点「开始计时」后限时内做出来点「AC 了」。超时或放弃会损失HP（生命）。HP归零则本次爬塔结束。</p>
-    <p><b>时限</b>：小怪 20 分钟、精英 40 分钟、Boss 60 分钟；超时后每 5 分钟分别扣除 10、10、20 HP。计时按系统时间走，刷新页面不会重置。</p>
-    <p><b>题目颜色</b>：小怪由黄色逐渐过渡到绿色，精英为青色，Boss 从难青到蓝。难度越高、阶段越靠后，颜色越偏向上限。</p>
-    <p><b>房间</b>：小怪、精英、未知（随机事件 / 战斗 / 商店 / 宝箱）、休息处、商店、宝箱。精英掉落遗物，Boss 可三选一遗物。</p>
-    <p><b>联机</b>：运行 <span class="mono">node server.js</span> 后，同一房间的玩家共享同一个种子（相同地图与事件），可以实时看到彼此进度、聊天，并互相赠送药水。</p>
+    <p><b>目标</b>：共 11 个难度（0 ~ 10），每个难度有 3 个阶段，每个阶段是一座 15 层的塔，尽头是 Boss。击败三个阶段的 Boss 即通关该难度，并解锁下一难度。难度 10 的第三阶段需要连续击败两个 Boss。</p>
+    <p><b>先古遗民</b>：每座塔的塔底都有一位先古遗民，先领一份特殊增益（随机三选一），才能踏上第一层。</p>
+    <p><b>战斗</b>：进入战斗房间后，页面会给出需要的题目难度颜色。你可以点「随机跳题」，从洛谷离线题库里抽一道对应难度的题，也可以自己找。点「开始计时」，做出来后点「AC 了」。没有放弃选项。</p>
+    <p><b>难度颜色</b>：小怪由黄（洛谷「普及」）到绿（「普及+/提高-」），精英为青（「提高」），Boss 从难青到蓝（「提高+/省选-」）。难度越高、阶段越靠后，越偏向上限。</p>
+    <p><b>超时扣血</b>：宽限时间内不扣血：小怪 20 分钟，精英 40 分钟，Boss 60 分钟。超过之后每满 5 分钟扣一次血（小怪 10、精英 10、Boss 20，随阶段与难度增加），直到你 AC。血量归零则本次爬塔结束。计时按系统时间走，刷新页面不会重置。</p>
+    <p><b>路径规划</b>：点「路径规划」后可以直接在地图上画线，联机时队友也能看到你的笔迹。</p>
+    <p><b>房间</b>：小怪、精英、未知（30 多种随机事件，也可能是战斗、商店或宝箱）、休息处、商店、宝箱。精英掉落遗物，Boss 可三选一遗物。</p>
+    <p><b>联机</b>：运行 <span class="mono">node server.js</span> 后，同一房间的玩家共享同一个种子，并像杀戮尖塔 2 一样一起选路：所有人对下一个节点投票，票数最多的节点胜出（平票随机），全队进入同一个房间，全部完成后再投下一票。每个人的血量、遗物、金币各算各的，倒下的玩家改为观战，全队倒下则本局失败。</p>
     <div class="row"><button data-a="goMenu">返回</button><button class="danger" data-a="resetProg">清空所有进度</button></div>
   </div></div>`;
 }
 function selectHTML(){
   const d=selDiff;
   const cards=[];
-  for(let i=1;i<=10;i++){
+  for(let i=0;i<=10;i++){
     const lock=i>prog.unlocked,b=prog.best[i]||0,cl=prog.cleared[i];
     cards.push(`<button class="dcard ${i===d?'on':''} ${lock?'lock':''}" data-a="pickDiff" data-d="${i}">
-      <span class="row"><b class="mono">难度 ${i}</b><span>${DNAMES[i-1]}</span>${lock?'<span class="dim">已锁定</span>':cl?'<span class="chip p-green">已通关</span>':''}</span>
-      <span class="dots">${[1,2,3].map(s=>`<i class="${(cl||b>=s&&!lock)&&(cl||s<b)?'f':''}"></i>`).join('')}</span></button>`);
+      <span class="row"><b class="mono">难度 ${i}</b><span>${DNAMES[i]}</span>${lock?'<span class="dim">已锁定</span>':cl?'<span class="chip p-green">已通关</span>':''}</span>
+      <span class="dots">${[1,2,3].map(s=>`<i class="${cl||s<b?'f':''}"></i>`).join('')}</span></button>`);
   }
-  const mods=MODS.slice(0,d).map((m,i)=>`<li class="${i===d-1?'new':''}">${m}</li>`).join('');
+  const mods=MODS.slice(0,d+1).map((m,i)=>`<li class="${i===d?'new':''}">${m}</li>`).join('');
   const locked=d>prog.unlocked;
-  return `<div class="wrap"><div class="row" style="margin-bottom:12px"><button data-a="goMenu">返回</button><h2>选择难度</h2></div>
+  return `<div class="wrap"><div class="row" style="margin-bottom:12px"><button data-a="goMenu">返回</button><h2>选择难度（0 ~ 10）</h2></div>
   <div class="sel"><div class="dgrid">${cards.join('')}</div>
-  <div class="panel"><h2>难度 ${d} · ${DNAMES[d-1]}</h2>
+  <div class="panel"><h2>难度 ${d} · ${DNAMES[d]}</h2>
     <p class="dim" style="margin:4px 0">${locked?'通关难度 '+(d-1)+' 后解锁。':'三个阶段依次挑战。'}</p>
     <ul class="modlist">${mods}</ul>
     <div class="field" style="margin-top:14px"><label for="seedIn" class="dim">种子（可留空，相同种子得到相同地图）</label><input id="seedIn" maxlength="20" placeholder="随机"></div>
@@ -757,63 +942,124 @@ function hudHTML(){
     pots+=id?`<span class="row" style="gap:2px"><button class="pot" data-a="usePotion" data-i="${i}" title="${esc(POTIONS[id].d)}">${POTIONS[id].n}</button><button class="pot" style="min-width:0;padding:.25em .4em" data-a="dropPotion" data-i="${i}" title="丢弃">×</button></span>`:'<span class="pot empty">空</span>';
   }
   return `<div class="hud">
-    <div class="grp"><b class="mono">D${run.difficulty}</b><span>${DNAMES[run.difficulty-1]}</span><span class="chip">${STAGE_NAMES[run.act-1]}</span></div>
-    <div class="grp"><span>HP</span><div class="hpbar"><i style="width:${Math.max(0,run.hp/run.maxHp*100)}%"></i></div><span class="mono">${run.hp}/${run.maxHp}</span></div>
+    <div class="grp"><b class="mono">D${run.difficulty}</b><span>${DNAMES[run.difficulty]}</span><span class="chip">${STAGE_NAMES[run.act-1]}</span></div>
+    <div class="grp"><span>血量</span><div class="hpbar"><i style="width:${Math.max(0,run.hp/run.maxHp*100)}%"></i></div><span class="mono">${run.hp}/${run.maxHp}</span></div>
     <div class="grp"><span>金币</span><b class="mono" style="color:var(--c-treasure)">${run.gold}</b></div>
     <div class="grp pots">${pots}</div>
     <div class="grp relics">${rel||'<span class="dim">暂无遗物</span>'}</div>
     <span class="spacer"></span>
     <div class="grp"><span class="dim mono">种子 ${esc(run.seed)}</span><button data-a="toLobby">联机</button><button data-a="goMenu">菜单</button></div></div>`;
 }
+const PENS=['#ff5252','#ffd166','#4ade80','#38bdf8','#e879f9'];
+const PCOL=['#ff6b6b','#4cc9f0','#ffd166','#b794f6','#4ade80','#fb923c','#f472b6','#94a3b8','#22d3ee','#a3e635','#f87171','#c084fc'];
+function memberColor(id){const i=Object.keys(net.members).indexOf(id);return PCOL[(i<0?0:i)%PCOL.length]}
+const isMP=()=>!!(run&&run.mp&&net.connected&&net.started);
+function strokesHTML(){
+  const d=(run&&run.map&&run.map.draw)||[];
+  return d.map(st=>{const p=st.p.length===1?[st.p[0],st.p[0]]:st.p;return `<polyline points="${p.map(q=>q.join(',')).join(' ')}" fill="none" stroke="${esc(st.c)}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".85"/>`}).join('');
+}
 function mapHTML(){
-  const nodes=run.map.nodes,av=availNodes();
-  const X=c=>60+c*96, Y=r=>50+(ROWS-r)*78;
+  const nodes=run.map.nodes,TOP=nodes.length-1,av=availNodes(),anc=run.map.ancient;
+  const X=c=>60+c*96, Y=r=>50+(TOP-r)*78;
   const jr=(r,c)=>{const g=rngFor(run.seed,'j'+run.act+'_'+r+'_'+c);return[(g()-0.5)*26,(g()-0.5)*22]};
   const pos={};
-  for(let r=0;r<=ROWS;r++)for(let c=0;c<W;c++)if(nodes[r][c]){const j=r===ROWS?[0,0]:jr(r,c);pos[r+','+c]=[X(c)+j[0],Y(r)+j[1]]}
+  for(let r=0;r<=TOP;r++)for(let c=0;c<W;c++)if(nodes[r][c]){const j=r>=ROWS?[0,0]:jr(r,c);pos[r+','+c]=[X(c)+j[0],Y(r)+j[1]]}
+  const ap=[X(3),Y(-1)],H=Y(-1)+50;
+  const mp=isMP();
+  const canPick=!run.room&&(!mp||(net.g&&net.g.phase==='vote'&&net.g.players.includes(net.id)));
+  const vmap={};
+  if(mp&&net.g&&net.g.phase==='vote')for(const id in net.g.votes){const v=net.g.votes[id];(vmap[v.r+','+v.c]=vmap[v.r+','+v.c]||[]).push(id)}
   let edges='',ns='';
-  for(let r=0;r<ROWS;r++)for(let c=0;c<W;c++){
+  for(let c=0;c<W;c++)if(nodes[0][c]){const b=pos['0,'+c];edges+=`<line class="edge ${anc.done?'on':''}" x1="${ap[0]}" y1="${ap[1]}" x2="${b[0]}" y2="${b[1]}"/>`}
+  for(let r=0;r<TOP;r++)for(let c=0;c<W;c++){
     const n=nodes[r][c];if(!n)continue;
     for(const nc of n.next){
       const a=pos[r+','+c],b=pos[(r+1)+','+nc];
-      const on=run.visited[r+','+c]&&(run.visited[(r+1)+','+nc]||(run.pos&&run.pos.r===r&&run.pos.c===c&&false));
+      const on=run.visited[r+','+c]&&run.visited[(r+1)+','+nc];
       edges+=`<line class="edge ${on?'on':''}" x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}"/>`;
     }
   }
-  for(let r=0;r<=ROWS;r++)for(let c=0;c<W;c++){
+  for(let r=0;r<=TOP;r++)for(let c=0;c<W;c++){
     const n=nodes[r][c];if(!n)continue;
-    const p=pos[r+','+c],vis=run.visited[r+','+c],isAv=av.includes(n)&&!run.room,cur=run.pos&&run.pos.r===r&&run.pos.c===c;
+    const p=pos[r+','+c],vis=run.visited[r+','+c],isAv=av.includes(n)&&canPick,cur=run.pos&&run.pos.r===r&&run.pos.c===c;
     const col=`var(--c-${n.type})`,rad=n.type==='boss'?34:22;
+    const vs=(vmap[r+','+c]||[]).map((id,i)=>`<circle cx="${-14+i*13}" cy="${-rad-8}" r="6" fill="${memberColor(id)}" stroke="#0a0f14" stroke-width="1.5"><title>${esc((net.members[id]||{}).name||'')}</title></circle>`).join('');
     ns+=`<g class="node ${vis?'visited':''} ${isAv?'avail':''} ${cur?'cur':''}" ${isAv?`data-a="node" data-r="${r}" data-c="${c}"`:''} transform="translate(${p[0]},${p[1]})" style="color:${col}">
       <title>${KIND_NAME[n.type]}</title>
       <circle class="ring" r="${rad}" stroke="${col}"/>
-      <text style="fill:${col};font-size:${n.type==='boss'?20:15}px">${KIND_GLYPH[n.type]}</text></g>`;
+      <text style="fill:${col};font-size:${n.type==='boss'?20:15}px">${KIND_GLYPH[n.type]}</text>${vs}</g>`;
   }
-  return `<svg viewBox="0 0 700 ${Y(0)+50}" role="img" aria-label="第 ${run.act} 阶段地图">${edges}${ns}</svg>`;
+  const ancAv=!anc.done&&!run.room&&!mp;
+  ns+=`<g class="node ${anc.done?'visited':''} ${ancAv?'avail':''}" ${ancAv?'data-a="node" data-r="-1" data-c="3"':''} transform="translate(${ap[0]},${ap[1]})">
+    <title>先古遗民</title><circle class="ring" r="30" stroke="var(--c-ancient)"/><text style="fill:var(--c-ancient);font-size:18px">古</text></g>`;
+  const layer=drawMode?`<rect id="drawlayer" x="0" y="0" width="700" height="${H}" fill="transparent" style="cursor:crosshair"/>`:'';
+  return `<svg class="${drawMode?'drawing':''}" viewBox="0 0 700 ${H}" role="img" aria-label="第 ${run.act} 阶段地图">${edges}${ns}<g id="drawg" style="pointer-events:none">${strokesHTML()}</g>${layer}</svg>`;
 }
+function drawbarHTML(){
+  const sw=PENS.map(c=>`<button class="swatch ${c===penColor?'on':''}" data-a="pen" data-c="${c}" style="background:${c}" aria-label="笔迹颜色"></button>`).join('');
+  return `<div class="drawbar"><button class="${drawMode?'primary':''}" data-a="drawToggle">${drawMode?'结束绘制':'路径规划'}</button>${drawMode?sw+'<button data-a="drawUndo">撤销</button><button data-a="drawClear">清空我的笔迹</button>':`<span class="dim">在地图上画线来规划路线${net.connected?'，队友也能看到':''}。</span>`}</div>`;
+}
+function mpBanner(){
+  if(!isMP())return '';
+  const g=net.g;
+  if(!g)return '<div class="banner">联机中……</div>';
+  if(g.over)return '<div class="banner">本局已结束。</div>';
+  if(!g.players.includes(net.id))return '<div class="banner">你已倒下，正在观战队友。</div>';
+  const n=g.players.length;
+  if(g.phase==='vote')return `<div class="banner">全队一起选路：点击发光的节点投票，所有人投完后票数最多的节点胜出（平票随机）。已投票 ${Object.keys(g.votes).length}/${n}。</div>`;
+  return `<div class="banner">全队正在同一个房间，已完成 ${g.done.length}/${n}。${run.room?'':'等你的队友完成后，再一起选路。'}</div>`;
+}
+function gmark(id){
+  const g=net.g;if(!g||g.over||!g.players.includes(id))return '';
+  if(g.phase==='vote')return g.votes[id]?' · 已投票':' · 选路中';
+  return g.done.includes(id)?' · 已完成':'';
+}
+function voteNode(r,c){
+  if(run.room||run.over||run.victory)return;
+  if(!net.g||net.g.phase!=='vote'){toast('请先等队友完成当前房间');return}
+  if(!availNodes().includes(nodeAt(r,c)))return;
+  netSend({t:'vote',r,c});
+}
+function sendDead(){if(run.deadSent)return;run.deadSent=true;netSend({t:'dead'})}
 function gameHTML(){
   const inNet=net.connected;
   return `${hudHTML()}
   <div class="game ${inNet?'':'solo'}">
-    <div><div id="mapwrap">${mapHTML()}</div>
-      <div class="mapnote"><span class="k-monster">怪 小怪</span><span class="k-elite">精 精英</span><span class="k-unknown">? 未知</span><span class="k-rest">休 休息处</span><span class="k-shop">店 商店</span><span class="k-treasure">宝 宝箱</span><span class="k-boss">魔 Boss</span></div></div>
+    <div>${mpBanner()}${drawbarHTML()}<div id="mapwrap">${mapHTML()}</div>
+      <div class="mapnote"><span class="k-ancient">古 先古遗民</span><span class="k-monster">怪 小怪</span><span class="k-elite">精 精英</span><span class="k-unknown">? 未知</span><span class="k-rest">休 休息处</span><span class="k-shop">店 商店</span><span class="k-treasure">宝 宝箱</span><span class="k-boss">魔 Boss</span></div></div>
     ${inNet?`<aside class="side" id="side">${sideInner()}</aside>`:''}
   </div>
-  ${run.over?endHTML(false):run.victory?endHTML(true):run.rootPending?rootHTML():run.room?roomHTML():''}`;
+  ${run.over?endHTML(false):run.victory?endHTML(true):run.room?roomHTML():''}${lgPanel?lgPanelHTML():''}`;
 }
-function rootHTML(){
-  return `<div class="modal-bg"><div class="modal"><h2>先古移民 · 根节点</h2>
-    <p>每座塔的起点都有一位先古移民。选择一项增益后，开启本阶段的爬塔。</p>
-    <div class="opts">${ROOT_BOONS.map((b,i)=>`<button data-a="root" data-i="${i}"><b>${b.n}</b><br><span class="dim">${b.d}</span></button>`).join('')}</div>
-  </div></div>`;
+/* ---------- 路径规划（涂鸦） ---------- */
+function redrawLayer(){const g=document.getElementById('drawg');if(g)g.innerHTML=strokesHTML()}
+function svgPoint(ev){
+  const svg=document.querySelector('#mapwrap svg'),pt=svg.createSVGPoint();
+  pt.x=ev.clientX;pt.y=ev.clientY;
+  const q=pt.matrixTransform(svg.getScreenCTM().inverse());
+  return [Math.round(q.x*10)/10,Math.round(q.y*10)/10];
+}
+const myId=()=>net.id||'me';
+function endStroke(){
+  if(!curStroke)return;
+  const st=curStroke;curStroke=null;save();
+  if(net.connected)netSend({t:'draw',act:run.act,stroke:{id:st.id,c:st.c,p:st.p}});
+}
+function drawUndo(){
+  const d=run.map.draw;
+  for(let i=d.length-1;i>=0;i--)if(d[i].by===myId()){const id=d[i].id;d.splice(i,1);redrawLayer();save();if(net.connected)netSend({t:'drawundo',act:run.act,id});return}
+}
+function drawClear(){
+  run.map.draw=run.map.draw.filter(x=>x.by!==myId());redrawLayer();save();
+  if(net.connected)netSend({t:'drawclear',act:run.act});
 }
 function endHTML(win){
   const st=run.stats,mins=Math.round((Date.now()-st.startedAt)/60000);
   return `<div class="modal-bg"><div class="modal">
     <h2>${win?'难度 '+run.difficulty+' 通关！':'爬塔结束'}</h2>
-    <p>${win?(run.difficulty<10?'难度 '+(run.difficulty+1)+' 已解锁。':'你已通关全部 10 个难度。'):'HP耗尽，你倒在了 '+STAGE_NAMES[run.act-1]+'。'}</p>
-    <div class="msg mono">击败 ${st.wins} 场 · 失败 ${st.fails} 场 · 精英 ${st.elites} 个 · 遗物 ${run.relics.length} 件 · 用时约 ${mins} 分钟</div>
-    <div class="row"><button class="primary" data-a="endBack">返回菜单</button>${win&&run.difficulty<10?`<button data-a="nextDiff">挑战难度 ${run.difficulty+1}</button>`:''}</div></div></div>`;
+    <p>${win?(run.difficulty<10?'难度 '+(run.difficulty+1)+' 已解锁。':'你已通关全部 10 个难度。'):'血量耗尽，你倒在了 '+STAGE_NAMES[run.act-1]+'。'}</p>
+    <div class="msg mono">击败 ${st.wins} 场 · 超时扣血 ${st.drain} 点 · 精英 ${st.elites} 个 · 遗物 ${run.relics.length} 件 · 用时约 ${mins} 分钟</div>
+    <div class="row"><button class="primary" data-a="endBack">返回菜单</button>${win&&run.difficulty<10&&!run.mp?`<button data-a="nextDiff">挑战难度 ${run.difficulty+1}</button>`:''}</div></div></div>`;
 }
 function relicLine(id){const r=RELICS[id];return `<b>${r.n}</b> <span class="dim">${r.d}</span>`}
 function roomHTML(){
@@ -822,55 +1068,60 @@ function roomHTML(){
   if(k==='monster'||k==='elite'||k==='boss'){
     const c=rm.combat,lv=rm.hint;
     title=`<span class="chip k-${k}">${KIND_NAME[k]}</span> ${esc(rm.name)}`;
-    const lim=Math.round(c.limitMs/60000);
+    const lim=Math.round(c.graceMs/60000);
     const lvTag=`<span class="chip p-${lv[1]}">${lv[0]}</span>`;
     if(rm.phase==='prep'){
+      const dm=drainDmg({},k);
       body=`<p>请在 OJ 上自行挑选一道 ${lvTag} 难度的题，建议题型：<b>${rm.topic}</b>。</p>
-      <div class="msg mono">时限 ${lim} 分钟${c.bonusMin?`（基础 ${c.baseMin}，加成 +${c.bonusMin}）`:''}</div>
-      <div class="row"><button data-a="randomLuogu">🎲 洛谷随机跳题</button><span class="dim" style="font-size:12px">按当前难度与建议题型筛选</span></div>
-      <div id="luoguPickStatus" class="dim" style="font-size:12px;min-height:1.4em"></div>
+      <div class="msg mono">宽限时间 ${lim} 分钟${c.bonusMin?`（基础 ${c.baseMin}，加成 +${c.bonusMin}）`:''}。超过后每 ${tickMs()/60000} 分钟扣 ${dm} 点血量，直到你 AC。</div>
+      ${lgHintHTML(k,lv,rm)}
+      <p class="dim" style="margin:0">这里没有放弃选项：要么做出来，要么血量耗尽。</p>
       <button class="primary" data-a="startCombat">选好了，开始计时</button>`;
     }else if(rm.phase==='fight'){
       const hints=c.hints.map(h=>`<div class="hint">${esc(h)}</div>`).join('');
-      const pb=run.potions.map((id,i)=>POTIONS[id].combat?`<button class="pot" data-a="usePotion" data-i="${i}" title="${esc(POTIONS[id].d)}">${POTIONS[id].n}</button>`:'').join('');
-      const flags=[c.insured?'保险':'',c.partial?'暴力分':'',c.lucky?'幸运':''].filter(Boolean).map(f=>`<span class="chip">${f}</span>`).join(' ');
+      const pb=run.potions.map((id,i)=>`<button class="pot" data-a="usePotion" data-i="${i}" title="${esc(POTIONS[id].d)}">${POTIONS[id].n}</button>`).join('');
+      const flags=[c.insured?'保险':'',c.partial?'暴力分':'',c.lucky?'幸运':'',c.shielded?'护符':'',c.guard?'护体':''].filter(Boolean).map(f=>`<span class="chip">${f}</span>`).join(' ');
       body=`<div class="timer" id="cdTimer">--:--</div>
       <div class="bar"><i id="cdBar" style="width:100%"></i></div>
+      <p class="dim" id="cdSub" style="margin:0;text-align:center"></p>
       <p class="dim" style="margin:0;text-align:center">题目难度 ${lvTag} · 建议题型 ${rm.topic} ${flags}</p>
       ${pb?`<div class="row"><span class="dim">药水</span>${pb}</div>`:''}
+      ${probHTML(rm)}
       ${hints}
-      <div class="row" style="justify-content:center">
-        <button class="primary" data-a="ac">AC 了</button>
-
-      </div>`;
+      <div class="row" style="justify-content:center"><button class="primary" data-a="ac">AC 了</button></div>`;
     }else if(rm.phase==='won'){
       const rw=rm.rewards;
-      body=`<div class="msg">计时结束，题目已通过。获得 <b>${rw.gold}</b> 金币${rw.heal?`，回复 ${rw.heal} 点HP`:''}。</div>`;
+      body=`<div class="msg">题目已通过。获得 <b>${rw.gold}</b> 金币${rw.heal?`，回复 ${rw.heal} 点血量`:''}。${c.lost?`本场超时共损失 ${c.lost} 点血量。`:''}</div>`;
       if(rw.potion)body+=`<div class="item"><span>药水 <b>${POTIONS[rw.potion].n}</b> <span class="dim">${POTIONS[rw.potion].d}</span></span><div class="row"><button data-a="claim" data-w="potion">拿走</button></div></div>`;
       if(rw.relic)body+=`<div class="item"><span>遗物 ${relicLine(rw.relic)}</span><div class="row"><button data-a="claim" data-w="relic">拿走</button></div></div>`;
-      if(rw.choices)body+=`<h3>选择一件 Boss 遗物</h3>`+rw.choices.map((id,i)=>`<div class="item"><span>${relicLine(id)}</span><div class="row"><button data-a="claim" data-w="choice" data-i="${i}">选择</button></div></div>`).join('');
-      body+=`<button class="primary" data-a="leave" ${rw.choices?'disabled':''}>${k==='boss'?(run.act<3?'前往下一阶段':'完成'):'继续'}</button>`;
-    }else if(rm.phase==='lost'){
-      body=`<div class="msg" style="border-color:#7a3a3a">${c.reason==='timeout'?'超时惩罚已耗尽生命。':'挑战失败。'}损失 <b>${rm.lost}</b> 点 HP。${rm.note||''}</div>`;
-      body+=k==='boss'?`<p class="dim">Boss 不会放你过去，只能再来一次。</p><button class="primary" data-a="retry">重新挑战（换一道题）</button>`:`<button class="primary" data-a="leave">继续前进</button>`;
+      if(rw.choices)body+=`<h3>选择一件 Boss 遗物</h3>`+rw.choices.map((id,i)=>`<div class="item"><span>${relicLine(id)}</span><div class="row"><button data-a="claim" data-w="choice" data-i="${i}">选择</button></div></div>`).join('')+`<button data-a="claim" data-w="skip">跳过</button>`;
+      const last=k==='boss'&&(run.act<3||(run.difficulty===10&&rm.node.r===ROWS));
+      body+=`<button class="primary" data-a="leave">${k==='boss'?(run.act<3?'前往下一阶段':(last?'迎战第二个 Boss':'完成')):'继续'}</button>`;
     }
+  }else if(k==='ancient'){
+    title=`<span class="chip k-ancient">先古</span> 先古遗民`;
+    if(rm.phase==='choose'){
+      body=`<p>一位先古遗民坐在塔底的篝火旁，说：「想登顶，先带走一份礼物。」三选一。</p><div class="opts">`+
+        rm.choices.map((id,i)=>{const b=BOONS.find(x=>x.id===id);return `<button data-a="ancient" data-i="${i}"><b>${b.n}</b><br><span class="dim">${b.d}</span></button>`}).join('')+`</div>`;
+    }else body=`<div class="msg">${esc(rm.result)}</div><button class="primary" data-a="leave">踏上征途</button>`;
   }else if(k==='shop'){
     title=`<span class="chip k-shop">商店</span> 补给站`;
     body=`<p class="mono">金币 ${run.gold}</p><div class="shopgrid">`+run.room.shop.items.map((it,i)=>{
       let nm='',ds='';
       if(it.t==='relic'){nm=RELICS[it.id].n;ds=RELICS[it.id].d}
       else if(it.t==='potion'){nm=POTIONS[it.id].n;ds=POTIONS[it.id].d}
-      else if(it.t==='heal'){nm='心理咨询';ds='回复 20 点 HP。'}
-      else{nm='健身房';ds='最大HP +6。'}
+      else if(it.t==='heal'){nm='校医室';ds='回复 20 点血量。'}
+      else{nm='健身房';ds='最大血量 +6。'}
       return `<div class="item ${it.sold?'sold':''}"><b>${nm}</b><span class="dim">${ds}</span><button data-a="buy" data-i="${i}" ${it.sold||run.gold<it.price?'disabled':''}>${it.sold?'已售出':it.price+' 金币'}</button></div>`;
     }).join('')+`</div><button class="primary" data-a="leave">离开商店</button>`;
   }else if(k==='rest'){
     title=`<span class="chip k-rest">休息处</span> 机房角落`;
     if(rm.phase==='choose'){
       const pct=Math.round(P(run.difficulty).restPct*100),h=Math.round(run.maxHp*P(run.difficulty).restPct)+E('restHeal');
-      body=`<div class="opts"><button data-a="rest" data-k="sleep">睡一觉：回复 ${h} 点HP（${pct}% 最大值${E('restHeal')?'+'+E('restHeal'):''}）</button>
-      <button data-a="rest" data-k="drill">做板子：下一场战斗时限 +10 分钟</button>
-      <button data-a="rest" data-k="potion">整理模板：获得一瓶随机药水</button></div>`;
+      const np=1+(E('restPotion')||0);
+      body=`<div class="opts"><button data-a="rest" data-k="sleep">睡一觉：回复 ${h} 点血量（${pct}% 最大值${E('restHeal')?'+'+E('restHeal'):''}）</button>
+      <button data-a="rest" data-k="drill">做板子：下一场战斗宽限时间 +10 分钟</button>
+      <button data-a="rest" data-k="potion">整理模板：获得 ${np} 瓶随机药水</button></div>`;
     }else body=`<div class="msg">${esc(rm.result)}</div><button class="primary" data-a="leave">继续</button>`;
   }else if(k==='treasure'){
     title=`<span class="chip k-treasure">宝箱</span> 一个旧机箱`;
@@ -880,10 +1131,130 @@ function roomHTML(){
     title=`<span class="chip k-unknown">未知</span> ${ev.title}`;
     if(rm.phase==='choose'){
       const opts=ev.dyn?ev.dyn(rngFor(run.seed,'evd'+nodeKey(rm.node))):ev.opts;
-      body=`<p>${ev.text}</p><div class="opts">`+opts.map((o,i)=>`<button data-a="evt" data-i="${i}" ${o.need&&run.gold<o.need?'disabled':''}>${o.t}</button>`).join('')+`</div>`;
+      body=`<p>${ev.text}</p><div class="opts">`+opts.map((o,i)=>`<button data-a="evt" data-i="${i}" ${(o.need&&run.gold<o.need)||(o.needPot&&!run.potions.length)?'disabled':''}>${o.t}</button>`).join('')+`</div>`;
     }else body=`<div class="msg">${esc(rm.result)}</div><button class="primary" data-a="leave">继续</button>`;
   }
   return `<div class="modal-bg"><div class="modal"><h2>${title}</h2>${body}</div></div>`;
+}
+
+/* ---------- 洛谷随机跳题（离线题库；思路参照 karsl 的 Tampermonkey 脚本） ---------- */
+const LG_DB='OISpireLuoguDB',LG_STORE='problems';
+const LG_URL='https://cdn.luogu.com.cn/problemset-open/latest.ndjson.gz';
+const LG_DIFF={0:'暂未评定',1:'入门',2:'普及-',3:'普及',4:'普及+/提高-',5:'提高',6:'提高+/省选-',7:'省选/NOI-',8:'NOI/NOI+/CTS'};
+const LG_COLOR={3:'黄',4:'绿',5:'青',6:'蓝'};      // 对应题目难度颜色
+const LG_TYPES={'洛谷':'luogu','主题库':'P','入门与面试':'B'};
+const LG_DIMS={algorithm:'算法',source:'来源',time:'时间',region:'区域',special:'特殊题目'};
+let lg=(()=>{const d={types:[],tags:{algorithm:[],source:[],time:[],region:[],special:[]},exclude:true,useRec:true};
+  try{const x=JSON.parse(lsGet('oi2_lg'));if(x){d.useRec=x.useRec!==false;d.types=x.types||[];for(const k in d.tags)d.tags[k]=(x.tags&&x.tags[k])||[];d.exclude=x.exclude!==false}}catch(e){}return d})();
+let lgDone=(()=>{try{return new Set(JSON.parse(lsGet('oi2_lgdone')||'[]'))}catch(e){return new Set()}})();
+let lgCount=null,lgBusy='',lgErr='';
+const lgSave=()=>{lsSet('oi2_lg',JSON.stringify(lg));lsSet('oi2_lgdone',JSON.stringify([...lgDone]))};
+function lgMarkDone(pid){lgDone.add(pid);lgSave()}
+function lgOpenDB(){return new Promise((res,rej)=>{const q=indexedDB.open(LG_DB,1);q.onupgradeneeded=()=>{const db=q.result;if(!db.objectStoreNames.contains(LG_STORE))db.createObjectStore(LG_STORE,{keyPath:'pid'})};q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
+async function lgTx(mode,fn){const db=await lgOpenDB();return new Promise((res,rej)=>{const tx=db.transaction(LG_STORE,mode);const r=fn(tx.objectStore(LG_STORE));tx.oncomplete=()=>res(r&&r.result);tx.onerror=()=>rej(tx.error)})}
+const lgCountNow=()=>lgTx('readonly',st=>st.count());
+const lgAll=()=>lgTx('readonly',st=>st.getAll());
+async function lgImport(buf){
+  const u8=new Uint8Array(buf);let text;
+  if(u8[0]===0x1f&&u8[1]===0x8b){
+    if(typeof DecompressionStream==='undefined')throw new Error('当前浏览器不支持解压 gzip，请先解压成 .ndjson 再导入。');
+    text=await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  }else text=new TextDecoder().decode(u8);
+  const lines=text.split('\n').filter(l=>l.trim());
+  await lgTx('readwrite',st=>{st.clear()});
+  let n=0;
+  for(let i=0;i<lines.length;i+=2000){
+    const batch=[];
+    for(const ln of lines.slice(i,i+2000)){try{const o=JSON.parse(ln);if(o.pid)batch.push({pid:o.pid,title:o.title,difficulty:o.difficulty,type:o.type,tags:o.tags||[]})}catch(e){}}
+    await lgTx('readwrite',st=>{batch.forEach(p=>st.put(p))});
+    n+=batch.length;lgBusy='导入中 '+n+'/'+lines.length;if(lgPanel)render();
+  }
+  lgBusy='';lgCount=n;
+}
+async function lgDownload(){
+  lgBusy='正在下载题库……';lgErr='';render();
+  try{
+    const res=await fetch(LG_URL);
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    await lgImport(await res.arrayBuffer());
+    toast('题库已导入：'+lgCount+' 题');render();return true;
+  }catch(e){
+    lgBusy='';
+    lgErr='无法直接下载（常见原因是浏览器的跨域限制）。请手动下载 '+LG_URL+' ，再用下方的「导入文件」选择它。';
+    render();return false;
+  }
+}
+function lgLevels(kind,lv){
+  if(kind==='monster')return lv[1]==='yellow'?[3]:[4];
+  if(kind==='elite')return [5];
+  return lv[0]==='难青'?[5]:lv[0]==='难青 ~ 蓝'?[5,6]:[6];
+}
+const lgLevelText=(k,lv)=>lgLevels(k,lv).map(d=>LG_DIFF[d]+'（'+LG_COLOR[d]+'）').join(' / ');
+const TOPIC_TAGS={
+  '数据结构':['线段树','树状数组','并查集','平衡树','堆','ST 表','分块','莫队','单调栈','单调队列','树形数据结构','线性数据结构','暴力数据结构'],
+  '动态规划':['动态规划 DP'],'图论':['图论'],'数学 / 数论':['数学','数论'],'字符串':['字符串'],'贪心':['贪心'],
+  '搜索 / 剪枝':['搜索','剪枝'],'构造':['构造'],'二分 / 三分':['二分','三分'],'计算几何':['计算几何'],'模拟':['模拟'],'博弈论':['博弈论']};
+// 默认标签：没有手动选算法标签、且开启了“默认使用推荐算法”时，才使用建议题型对应的标签
+function recTags(topic){
+  if(lg.useRec===false||lg.tags.algorithm.length)return [];
+  return (TOPIC_TAGS[topic]||[]).filter(t=>LG_TAGS.algorithm.includes(t));
+}
+async function lgPick(levels,topic){
+  let res=(await lgAll()).filter(p=>levels.includes(p.difficulty));
+  if(lg.types.length)res=res.filter(p=>lg.types.includes(p.type));
+  const rec=recTags(topic);
+  const tags=[].concat(...Object.values(lg.tags));
+  if(tags.length)res=res.filter(p=>p.tags&&tags.every(t=>p.tags.includes(t)));
+  if(lg.exclude)res=res.filter(p=>!lgDone.has(p.pid));
+  if(rec.length){
+    const hit=res.filter(p=>p.tags&&rec.some(t=>p.tags.includes(t)));
+    if(hit.length)return hit[Math.floor(Math.random()*hit.length)];
+    if(res.length)toast('推荐算法下没有合适的题，已放宽标签');
+  }
+  return res.length?res[Math.floor(Math.random()*res.length)]:null;
+}
+async function lgJump(){
+  const rm=run&&run.room;if(!rm||!rm.combat||rm.phase==='won')return;
+  if(rm.phase==='fight'&&rm.problem)return;
+  const w=window.open('','_blank');
+  try{
+    if(!(await lgCountNow())){if(!(await lgDownload())){if(w)w.close();lgPanel=true;render();return}}
+    const p=await lgPick(lgLevels(rm.kind,rm.hint),rm.topic);
+    if(!p){if(w)w.close();toast('没有符合条件的题目，请调整题库设置');return}
+    rm.problem={pid:p.pid,title:p.title,diff:p.difficulty};save();
+    const url='https://www.luogu.com.cn/problem/'+p.pid;
+    if(w)w.location.href=url;else toast('浏览器拦截了新窗口，请点击题目链接');
+    render();
+  }catch(e){if(w)w.close();toast('跳题失败：'+e.message)}
+}
+function probLink(rm){return `<div class="hint">当前题目：<a href="https://www.luogu.com.cn/problem/${esc(rm.problem.pid)}" target="_blank" rel="noopener">${esc(rm.problem.pid)} ${esc(rm.problem.title||'')}</a></div>`}
+function lgHintHTML(k,lv,rm){
+  const rt=recTags(rm.topic);
+  return `<div class="msg">洛谷难度：${lgLevelText(k,lv)}${rt.length?`<br>默认标签：${esc(rm.topic)}（${esc(rt.join('、'))}），可在题库设置里关闭`:''}</div>
+    <div class="row"><button data-a="jump">${rm.problem?'换一题':'随机跳题'}</button><button data-a="lgPanel">题库设置</button></div>${rm.problem?probLink(rm):''}`;
+}
+function probHTML(rm){
+  if(rm.problem)return probLink(rm);
+  return `<div class="row"><button data-a="jump">随机跳题</button><button data-a="lgPanel">题库设置</button></div>`;
+}
+function lgPanelHTML(){
+  const types=Object.entries(LG_TYPES).map(([n,v])=>`<label class="chk"><input type="checkbox" data-a="lgType" data-v="${v}" ${lg.types.includes(v)?'checked':''}> ${n}</label>`).join('');
+  const dims=Object.keys(LG_DIMS).map(k=>`<div class="field"><span class="dim">${LG_DIMS[k]}</span>
+    <div class="row">${lg.tags[k].map(t=>`<span class="chip" style="color:var(--cyan)">${esc(t)} <span data-a="lgTagDel" data-k="${k}" data-t="${esc(t)}" style="cursor:pointer">×</span></span>`).join('')}</div>
+    <div class="row"><input id="lgt_${k}" list="lgl_${k}" placeholder="搜索${LG_DIMS[k]}标签" style="flex:1"><button data-a="lgTagAdd" data-k="${k}">添加</button></div>
+    <datalist id="lgl_${k}">${LG_TAGS[k].map(t=>`<option value="${esc(t)}"></option>`).join('')}</datalist></div>`).join('');
+  return `<div class="modal-bg" style="z-index:30"><div class="modal"><h2>洛谷随机跳题</h2>
+    <p class="dim" style="margin:0">跳题时会根据当前战斗的难度颜色，从离线题库里随机抽一道题并在新标签页打开。题库来自洛谷开放数据，只保存在你的浏览器里。</p>
+    <div class="msg">题库：${lgCount==null?'尚未检测':lgCount+' 题'} ${lgBusy?' · '+esc(lgBusy):''}</div>
+    ${lgErr?`<div class="msg" style="border-color:#7a3a3a;word-break:break-all">${esc(lgErr)}</div>`:''}
+    <div class="row"><button data-a="lgDownload">下载 / 更新题库</button><input type="file" id="lgFile" accept=".gz,.ndjson,.json,.txt"></div>
+    <div><b>题库</b><div class="row" style="margin-top:6px">${types}<span class="dim">（不选表示全部）</span></div></div>
+    ${dims}
+    <div class="field"><label class="chk"><input type="checkbox" data-a="lgRec" ${lg.useRec!==false?'checked':''}> 默认使用战斗建议的算法标签（手动选了算法标签时以手动为准）</label>
+      <label class="chk"><input type="checkbox" data-a="lgExcl" ${lg.exclude?'checked':''}> 不再抽到已 AC 的题（共 ${lgDone.size} 道）</label>
+      <textarea id="lgPaste" placeholder="可以粘贴你已做过的题号，例如 P1001 P1002 B2002"></textarea>
+      <div class="row"><button data-a="lgPasteImport">记录这些题号</button><button data-a="lgClearDone">清空已做记录</button></div></div>
+    <button class="primary" data-a="lgClose">完成</button></div></div>`;
 }
 
 /* ---------- 侧栏 / 大厅 ---------- */
@@ -894,8 +1265,8 @@ function sideInner(){
   const rows=ids.map(id=>{
     const m=net.members[id],s=m.s,me=id===net.id;
     const prog_=s&&s.act?`D${s.d} · 阶段${s.act} · ${s.floor}/${ROWS}层`:'未开局';
-    const rem=s&&s.rem!=null?` · <span class="mono" data-end="${m.at+s.rem}">${fmtTime(s.rem)}</span>`:'';
-    return `<div class="pl ${me?'me':''}"><div class="top"><b>${esc(m.name)}${id===net.host?' <span class="dim">房主</span>':''}${me?' <span class="dim">我</span>':''}</b><span class="dim">${s?esc(s.st):''}${rem}</span></div>
+    const rem=s&&s.rem!=null?(s.rem>0?` · <span class="mono" data-end="${m.at+s.rem}">${fmtTime(s.rem)}</span>`:' · <span style="color:var(--bad)">超时</span>'):'';
+    return `<div class="pl ${me?'me':''}"><div class="top"><b><span class="dot" style="background:${memberColor(id)}"></span>${esc(m.name)}${id===net.host?' <span class="dim">房主</span>':''}${me?' <span class="dim">我</span>':''}</b><span class="dim">${s?esc(s.st):''}${rem}${gmark(id)}</span></div>
       <div class="top"><span>${prog_}</span>${s&&s.max?`<span class="mono">${s.hp}/${s.max}</span>`:''}</div>
       ${s&&s.max?`<div class="bar"><i style="width:${Math.max(0,s.hp/s.max*100)}%;background:var(--bad)"></i></div>`:''}
       ${!me&&run&&run.potions.length&&!run.over?`<div class="row"><select id="gift_${id}">${mypots}</select><button data-a="gift" data-to="${id}">赠药</button></div>`:''}</div>`;
@@ -918,11 +1289,11 @@ function lobbyHTML(){
       <button class="primary" data-a="join">加入 / 创建房间</button></div></div>`;
   }
   const isHost=net.host===net.id;
-  const opts=[...Array(prog.unlocked)].map((_,i)=>`<option value="${i+1}">难度 ${i+1} · ${DNAMES[i]}</option>`).join('');
+  const opts=[...Array(prog.unlocked+1)].map((_,i)=>`<option value="${i}">难度 ${i} · ${DNAMES[i]}</option>`).join('');
   let ctl;
-  if(net.spectate)ctl=`<div class="msg">你尚未解锁本局难度 ${net.config.difficulty}，只能观战。</div>`;
+  if(net.spectate)ctl=`<div class="msg">你没有参与本局（未解锁难度 ${net.config.difficulty}，或是中途加入），只能观战队友。</div>`;
   else if(net.started)ctl=`<div class="msg">对局已开始（难度 ${net.config.difficulty}，种子 ${esc(net.config.seed)}）。</div>
-    <div class="row">${run&&!run.over&&!run.victory?'<button class="primary" data-a="toGame">回到对局</button>':`<button class="primary" data-a="joinRunning">加入当前对局</button>`}</div>`;
+    <div class="row">${run&&run.mp?'<button class="primary" data-a="toGame">回到对局</button>':'<span class="dim">对局已开始，你只能观战队友。</span>'}</div>`;
   else ctl=isHost?`<div class="field"><label for="hostD" class="dim">难度（仅可选择你已解锁的）</label><select id="hostD">${opts}</select></div>
       <div class="field"><label for="hostSeed" class="dim">种子（留空则随机）</label><input id="hostSeed" maxlength="20"></div>
       <button class="primary" data-a="hostStart">开始对局</button>`:`<div class="msg">等待房主开始对局……</div>`;
@@ -935,140 +1306,25 @@ function lobbyHTML(){
 
 /* ---------- 计时 ---------- */
 function tick(){
-  if(run&&run.room&&run.room.combat&&run.room.phase==='fight'){
-    const c=run.room.combat,rem=remainingMs(c);
-    if(rem<=0&&!c.done){
-      const rm=run.room, elapsed=Date.now()-c.startAt;
-      const threshold=c.limitMs, interval=5*60000;
-      const periods=Math.floor((elapsed-threshold)/interval);
-      const applied=c.penaltyAt||0;
-      if(periods>applied){
-        const amount=rm.kind==='boss'?20:10;
-        const loss=(periods-applied)*amount;
-        c.penaltyAt=periods;run.hp=Math.max(0,run.hp-loss);
-        toast('超时惩罚：损失 '+loss+' HP');
-        if(run.hp<=0){run.over=true;c.done=true;rm.phase='lost';rm.reason='timeout';rm.lost=loss;save();render();return}
-        save();render();return;
-      }
+  if(run&&!run.over&&run.room&&run.room.combat&&run.room.phase==='fight'){
+    const c=run.room.combat;
+    applyOvertime();
+    if(run.over)return;
+    const rem=remainingMs(c),t=document.getElementById('cdTimer');
+    if(t){
+      const tk=tickMs(),dm=drainDmg(c,run.room.kind),over=-rem;
+      if(rem>0){t.textContent=fmtTime(rem);t.className='timer'+(rem<5*60000?' warn':'')}
+      else{t.textContent=fmtTime(tk-(over%tk));t.className='timer crit'}
+      const sub=document.getElementById('cdSub');
+      if(sub)sub.textContent=rem>0?'宽限时间剩余。超时后每 '+tk/60000+' 分钟扣 '+dm+' 点血量。':'已超时 '+fmtTime(over)+'，上方倒计时结束时扣 '+dm+' 点血量。';
+      const b=document.getElementById('cdBar');
+      if(b)b.style.width=(rem>0?Math.min(100,rem/(c.graceMs+c.extraMs)*100):100-(over%tk)/tk*100)+'%';
     }
-    const t=document.getElementById('cdTimer');
-    if(t){t.textContent=rem>=0?fmtTime(rem):'+'+fmtTime(-rem);t.className='timer'+(rem<5*60000?' crit':rem<10*60000?' warn':'')}
-    const b=document.getElementById('cdBar');if(b)b.style.width=Math.max(0,rem/(c.limitMs+c.extraMs)*100)+'%';
   }
   document.querySelectorAll('[data-end]').forEach(e=>{e.textContent=fmtTime(+e.dataset.end-Date.now())});
 }
 setInterval(tick,500);
 setInterval(()=>{if(net.connected&&run&&cb()&&cb().started&&!cb().done){syncStatus()}},5000);
-
-/* ---------- 洛谷离线随机跳题（参考用户提供的洛谷随机跳题插件） ---------- */
-const LUOGU_DB='OI2LuoguOfflineDB', LUOGU_STORE='problems';
-const LUOGU_DATA_URL='https://cdn.luogu.com.cn/problemset-open/latest.ndjson.gz';
-let luoguDBPromise=null, luoguImportPromise=null;
-function openLuoguDB(){
-  if(luoguDBPromise)return luoguDBPromise;
-  luoguDBPromise=new Promise((resolve,reject)=>{
-    if(!('indexedDB' in window)){reject(new Error('当前浏览器不支持 IndexedDB'));return}
-    const req=indexedDB.open(LUOGU_DB,1);
-    req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains(LUOGU_STORE))db.createObjectStore(LUOGU_STORE,{keyPath:'pid'})};
-    req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('打开本地题库失败'));
-  });
-  return luoguDBPromise;
-}
-async function luoguProblemCount(){const db=await openLuoguDB();return new Promise((resolve,reject)=>{const tx=db.transaction(LUOGU_STORE,'readonly'),q=tx.objectStore(LUOGU_STORE).count();q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)})}
-async function importLuoguProblems(){
-  if(luoguImportPromise)return luoguImportPromise;
-  luoguImportPromise=(async()=>{
-    if(typeof window.pako==='undefined')throw new Error('压缩库加载失败，请检查网络后刷新页面');
-    const status=document.getElementById('luoguPickStatus');if(status)status.textContent='正在下载洛谷离线题库（首次使用需要一些时间）…';
-    const response=await fetch(LUOGU_DATA_URL,{mode:'cors',cache:'no-cache'});
-    if(!response.ok)throw new Error('题库下载失败：HTTP '+response.status);
-    const compressed=new Uint8Array(await response.arrayBuffer());
-    const ndjson=window.pako.ungzip(compressed,{to:'string'});
-    const lines=ndjson.split('\n');
-    const db=await openLuoguDB();let batch=[];let imported=0;
-    const writeBatch=()=>new Promise((resolve,reject)=>{
-      if(!batch.length){resolve();return}
-      const tx=db.transaction(LUOGU_STORE,'readwrite'),store=tx.objectStore(LUOGU_STORE);
-      for(const item of batch)store.put(item);
-      tx.oncomplete=()=>{imported+=batch.length;batch=[];if(status)status.textContent=`正在建立本地题库：${imported.toLocaleString()} 题`;resolve()};
-      tx.onerror=()=>reject(tx.error||new Error('写入本地题库失败'));
-    });
-    for(let i=0;i<lines.length;i++){
-      if(!lines[i])continue;
-      try{const o=JSON.parse(lines[i]);if(o.pid&&Number.isFinite(Number(o.difficulty)))batch.push({pid:String(o.pid),title:String(o.title||''),difficulty:Number(o.difficulty),type:String(o.type||''),tags:Array.isArray(o.tags)?o.tags:[]})}catch(_){ }
-      if(batch.length>=1200)await writeBatch();
-    }
-    await writeBatch();
-    if(!imported)throw new Error('洛谷题库没有返回有效题目');
-    return imported;
-  })();
-  try{return await luoguImportPromise}finally{luoguImportPromise=null}
-}
-function luoguDifficultyValues(hint){
-  // 按游戏的推荐颜色映射洛谷公开题库 difficulty：黄=普及(3)，
-  // 绿=普及+/提高-(4)，青=提高(5)，蓝=提高+/省选-(6)。
-  const label=String(hint&&hint[0]||'');
-  if(label.includes('难青 ~ 蓝'))return [5,6];
-  if(label.includes('黄'))return [3];
-  if(label.includes('绿'))return [4];
-  if(label.includes('蓝'))return [6];
-  if(label.includes('青'))return [5];
-  return [];
-}
-function luoguTopicTags(topic){
-  // 这些名称取自洛谷题库的「算法」标签；同一推荐方向内按 OR 匹配。
-  const map={
-    '数据结构':['树形数据结构','线性数据结构','线段树','并查集','平衡树','堆','树状数组','可并堆','动态树 LCT','单调队列','单调栈','树套树','可持久化线段树','可持久化','前缀和','栈','队列','整体二分','K-D Tree','李超线段树','线段树合并','哈希表','莫队','分块','ST 表','优先队列','树链剖分','树的遍历','最近公共祖先 LCA','树的直径','点分治','树上启发式合并'],
-    '动态规划':['动态规划 DP','背包 DP','数位 DP','区间 DP','树形 DP','轮廓线 DP','线性 DP','状压 DP','记忆化搜索','动态规划优化','斜率优化','状态合并','DP 套 DP','动态 DP','决策单调性','整体转移'],
-    '图论':['图论','Kruskal 重构树','网络流','图论建模','图遍历','拓扑排序','最短路','生成树','最小环','负权环','连通块','2-SAT','强连通分量','Tarjan','双连通分量','欧拉回路','差分约束','仙人掌','二分图','一般图的最大匹配','上下界网络流','最小割','费用流','圆方树','Floyd 算法','广义串并联图','Hall 定理','基环树','虚树','树论','最大流最小割定理'],
-    '数学 / 数论':['数学','数论','素数判断','最大公约数 gcd','扩展欧几里德算法','不定方程','进制','快速傅里叶变换 FFT','快速数论变换 NTT','快速沃尔什变换 FWT','快速莫比乌斯变换 FMT','中国剩余定理 CRT','莫比乌斯反演','逆元','Lucas 定理','类欧几里得算法','调和级数','欧拉降幂','整除分块','Dirichlet 卷积','大步小步算法 BSGS','二次剩余','Bézout 定理','杜教筛','欧拉函数','线性筛法','原根','多项式','组合数学','排列组合','二项式定理','康托展开','Prüfer 序列','LGV 引理','矩阵树定理','鸽笼原理','容斥原理','Fibonacci 数列','Catalan 数','Stirling 数','生成函数','概率论','期望','线性代数','矩阵运算','高斯消元','拉格朗日反演','微积分','导数','积分','定积分','级数','行列式','特征值'],
-    '字符串':['字符串','后缀自动机 SAM','字典树 Trie','AC 自动机','KMP 算法','后缀数组 SA','后缀树','有限状态自动机','回文自动机 PAM','Manacher 算法','Lyndon 分解','Z 函数','哈希 hashing'],
-    '贪心':['贪心','反悔贪心'],
-    '搜索 / 剪枝':['搜索','广度优先搜索 BFS','深度优先搜索 DFS','剪枝','记忆化搜索','启发式搜索','迭代加深搜索','启发式迭代加深搜索 IDA*','Dancing Links','折半搜索 meet in the middle','A*  算法'],
-    '构造':['构造','Ad-hoc','分类讨论'],
-    '二分 / 三分':['二分','三分','整体二分'],
-    '计算几何':['计算几何','三维计算几何','向量','凸包','叉积','线段相交','半平面交','旋转卡壳','极角排序','平面几何','闵可夫斯基和 Minkowski sum'],
-    '模拟':['模拟','高精度'],
-    '博弈论':['博弈论','博弈树','Nim 积','SG 函数']
-  };
-  return map[topic]||[];
-}
-function normalizeLuoguTag(value){return String(value||'').normalize('NFKC').toLowerCase().replace(/[\s　]+/g,'').replace(/[（）()]/g,'')}
-function chooseLuoguProblem(problems,room){
-  const difficulties=luoguDifficultyValues(room.hint);
-  const wantedTags=luoguTopicTags(room.topic).map(normalizeLuoguTag);
-  if(!difficulties.length||!wantedTags.length)return null;
-  // 难度与算法必须同时满足；算法标签在推荐方向内 OR 匹配，不退回到无标签题。
-  let pool=problems.filter(p=>difficulties.includes(Number(p.difficulty))&&(p.tags||[]).some(tag=>{
-    const normalized=normalizeLuoguTag(typeof tag==='string'?tag:(tag&&tag.name)||tag);
-    return wantedTags.some(w=>normalized===w||normalized.includes(w)||w.includes(normalized));
-  }));
-  // 符合推荐条件时优先主题库 P 题；没有 P 题才从其它题库类型中抽取。
-  const main=pool.filter(p=>p.type==='P');if(main.length)pool=main;
-  if(!pool.length)return null;
-  return pool[Math.floor(Math.random()*pool.length)];
-}
-async function randomLuoguJump(popup){
-  const status=document.getElementById('luoguPickStatus');
-  try{
-    let count=await luoguProblemCount();
-    if(!count){await importLuoguProblems();count=await luoguProblemCount()}
-    if(status)status.textContent='正在从本地题库筛选…';
-    const db=await openLuoguDB();
-    const all=await new Promise((resolve,reject)=>{const tx=db.transaction(LUOGU_STORE,'readonly'),q=tx.objectStore(LUOGU_STORE).getAll();q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
-    const problem=chooseLuoguProblem(all,run.room);
-    if(!problem)throw new Error(`题库中暂时没有同时符合推荐难度（${(luoguDifficultyValues(run.room.hint)||[]).join('/')}）和算法「${run.room.topic}」的题目；没有擅自放宽筛选条件，请换一间战斗房或更新题库`);
-    const url='https://www.luogu.com.cn/problem/'+encodeURIComponent(problem.pid);
-    if(popup&&!popup.closed)popup.location.href=url;else window.open(url,'_blank','noopener');
-    if(status)status.textContent=`已抽中：${problem.pid} · ${problem.title||'未命名题目'}（洛谷难度 ${problem.difficulty}，算法：${run.room.topic}）`;
-    toast('已抽取洛谷题目：'+problem.pid);
-  }catch(err){
-    console.error('洛谷随机跳题失败',err);
-    if(popup&&!popup.closed)popup.close();
-    if(status)status.textContent='随机跳题失败：'+(err.message||'未知错误');
-    toast('洛谷随机跳题失败，请检查网络或稍后重试');
-  }
-}
 
 /* ---------- 事件分发 ---------- */
 $app.addEventListener('click',e=>{
@@ -1080,16 +1336,26 @@ $app.addEventListener('click',e=>{
     case 'goSelect':selDiff=Math.min(selDiff,prog.unlocked);view='select';render();break;
     case 'pickDiff':selDiff=+d.d;render();break;
     case 'startSolo':{const s=(document.getElementById('seedIn')||{}).value;startRun(selDiff,(s||'').trim()||null);break}
-    case 'continue':try{const r=JSON.parse(lsGet(LS_RUN));if(r&&!r.over&&!r.victory){run=r;view='game';lastMapAct=null;render();break}}catch(x){}lsDel(LS_RUN);toast('没有可继续的存档');render();break;
-    case 'node':enterNode(+d.r,+d.c);break;
-    case 'root':chooseRoot(+d.i);break;
-    case 'randomLuogu':{const popup=window.open('about:blank','_blank');randomLuoguJump(popup);break}
+    case 'continue':try{const r=JSON.parse(lsGet(LS_RUN));if(r&&r.v===3&&!r.mp&&!r.over&&!r.victory){run=r;view='game';lastMapAct=null;render();break}}catch(x){}lsDel(LS_RUN);toast('没有可继续的存档');render();break;
+    case 'node':if(isMP())voteNode(+d.r,+d.c);else enterNode(+d.r,+d.c);break;
     case 'startCombat':startCombat();break;
     case 'ac':winCombat();break;
-    case 'giveup':cb().confirm=true;render();break;
-    case 'giveupNo':cb().confirm=false;render();break;
-    case 'giveup2':failCombat('giveup');break;
-    case 'retry':retryBoss();break;
+    case 'ancient':ancientPick(+d.i);break;
+    case 'jump':lgJump();break;
+    case 'lgPanel':lgPanel=true;lgCountNow().then(n=>{lgCount=n;if(lgPanel)render()}).catch(()=>{});render();break;
+    case 'lgClose':lgPanel=false;render();break;
+    case 'lgDownload':lgDownload();break;
+    case 'lgType':{const v=d.v,i=lg.types.indexOf(v);if(t.checked&&i<0)lg.types.push(v);else if(!t.checked&&i>=0)lg.types.splice(i,1);lgSave();break}
+    case 'lgTagAdd':{const el=document.getElementById('lgt_'+d.k);const v=el?el.value.trim():'';if(v&&LG_TAGS[d.k].includes(v)){if(!lg.tags[d.k].includes(v))lg.tags[d.k].push(v);lgSave();if(el)el.value='';render()}else toast('请从候选里选择一个标签');break}
+    case 'lgTagDel':{const a2=lg.tags[d.k],i=a2.indexOf(d.t);if(i>=0)a2.splice(i,1);lgSave();render();break}
+    case 'lgExcl':lg.exclude=t.checked;lgSave();break;
+    case 'lgRec':lg.useRec=t.checked;lgSave();render();break;
+    case 'lgPasteImport':{const el=document.getElementById('lgPaste');const ids=((el&&el.value)||'').toUpperCase().match(/[A-Z]+\d+/g)||[];ids.forEach(x=>lgDone.add(x));lgSave();if(el)el.value='';toast('已记录 '+ids.length+' 个题号');render();break}
+    case 'lgClearDone':lgDone.clear();lgSave();render();break;
+    case 'drawToggle':drawMode=!drawMode;render();break;
+    case 'pen':penColor=d.c;render();break;
+    case 'drawUndo':drawUndo();break;
+    case 'drawClear':drawClear();break;
     case 'leave':leaveRoom();break;
     case 'claim':claim(d.w,+d.i);break;
     case 'usePotion':usePotion(+d.i);break;
@@ -1100,7 +1366,7 @@ $app.addEventListener('click',e=>{
     case 'evt':eventChoose(+d.i);break;
     case 'endBack':if(run&&run.over)lsDel(LS_RUN);run=null;view=net.connected?'lobby':'menu';render();break;
     case 'nextDiff':startRun(run.difficulty+1,null);break;
-    case 'resetProg':if(d.sure){prog={unlocked:1,best:{},cleared:{}};saveProg();lsDel(LS_RUN);toast('进度已清空');view='menu';render()}else{t.dataset.sure=1;t.textContent='再点一次确认清空'}break;
+    case 'resetProg':if(d.sure){prog={unlocked:0,best:{},cleared:{}};saveProg();lsDel(LS_RUN);toast('进度已清空');view='menu';render()}else{t.dataset.sure=1;t.textContent='再点一次确认清空'}break;
     case 'toLobby':case 'goLobby':view='lobby';render();break;
     case 'toGame':view='game';render();break;
     case 'join':{
@@ -1114,13 +1380,34 @@ $app.addEventListener('click',e=>{
       const dd=+document.getElementById('hostD').value,s=(document.getElementById('hostSeed').value||'').trim()||Math.random().toString(36).slice(2,8);
       netSend({t:'start',difficulty:dd,seed:s});break}
     case 'hostReset':netSend({t:'reset'});break;
-    case 'joinRunning':if(net.config.difficulty>prog.unlocked){toast('你尚未解锁该难度')}else startRun(net.config.difficulty,net.config.seed);break;
     case 'chat':{const i=document.getElementById('chatIn');if(i&&i.value.trim()){netSend({t:'chat',text:i.value.trim()});i.value=''}break}
     case 'gift':giftPotion(d.to);break;
   }
 });
+$app.addEventListener('change',async e=>{
+  if(e.target.id==='lgFile'&&e.target.files&&e.target.files[0]){
+    try{lgBusy='读取文件中……';lgErr='';render();await lgImport(await e.target.files[0].arrayBuffer());toast('题库已导入：'+lgCount+' 题')}
+    catch(x){lgBusy='';lgErr='导入失败：'+x.message}
+    render();
+  }
+});
+$app.addEventListener('pointerdown',e=>{
+  if(e.target.id!=='drawlayer'||!run||!run.map)return;
+  e.preventDefault();try{e.target.setPointerCapture(e.pointerId)}catch(x){}
+  curStroke={id:'s'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),by:myId(),c:penColor,p:[svgPoint(e)]};
+  run.map.draw.push(curStroke);redrawLayer();
+});
+$app.addEventListener('pointermove',e=>{
+  if(!curStroke)return;
+  const q=svgPoint(e),l=curStroke.p[curStroke.p.length-1];
+  if(Math.hypot(q[0]-l[0],q[1]-l[1])<3)return;
+  if(curStroke.p.length<500)curStroke.p.push(q);
+  redrawLayer();
+});
+$app.addEventListener('pointerup',endStroke);
+$app.addEventListener('pointercancel',endStroke);
 $app.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='chatIn'){e.preventDefault();const b=document.querySelector('[data-a="chat"]');if(b)b.click()}});
-window.addEventListener('beforeunload',()=>{if(run)lsSet(LS_RUN,JSON.stringify(run))});
+window.addEventListener('beforeunload',()=>{if(run&&!run.mp)lsSet(LS_RUN,JSON.stringify(run))});
 render();
 </script>
 </body>
