@@ -111,7 +111,7 @@ function broadcast(room, obj, except) { for (const m of room.members.values()) i
 
 /* ---------- 全队进度（投票 / 房间） ---------- */
 function mkFight(g) {
-  return { need: Math.max(1, Math.floor(g.players.size * 2 / 3)), problems: null, solved: {}, started: false, won: false };
+  return { need: Math.max(1, Math.floor(g.players.size * 2 / 3)), problems: null, solved: Object.create(null), started: false, won: false };
 }
 function newGame(room) {
   const g = { phase: 'room', step: 0, votes: {}, done: {}, players: new Set(room.members.keys()), over: false };
@@ -235,20 +235,20 @@ function handle(c, m) {
       clean.push({ pid: p.pid, title: String(p.title || '').slice(0, 60), diff: Number.isInteger(p.diff) ? p.diff : -1 });
       if (clean.length >= f.need) break;
     }
-    if (!clean.length) return send(c, { t: 'error', msg: '题目无效' });
-    f.problems = clean; f.solved = {};
+    if (clean.length !== f.need) return send(c, { t: 'error', msg: '本场需要正好 ' + f.need + ' 道不同题目' });
+    f.problems = clean; f.solved = Object.create(null);
     pushG(room);
   } else if (m.t === 'pstart') {
     if (!g || g.over || g.phase !== 'room' || !g.players.has(c.id)) return;
-    const f = g.fight; if (!f.problems || f.started) return;
+    const f = g.fight; if (!f.problems || f.problems.length !== f.need || f.started) return;
     f.started = true; pushG(room);
   } else if (m.t === 'psolve') {
     if (!g || g.over || g.phase !== 'room' || !g.players.has(c.id)) return;
-    const f = g.fight; if (!f.started || f.won || !f.problems) return;
+    const f = g.fight; if (!f.started || f.won || !f.problems || f.problems.length !== f.need) return;
     const pid = String(m.pid || '');
-    if (!f.problems.some(p => p.pid === pid) || f.solved[pid]) return;
+    if (!f.problems.some(p => p.pid === pid) || Object.prototype.hasOwnProperty.call(f.solved, pid)) return;
     f.solved[pid] = { id: c.id, name: c.name };
-    if (f.problems.every(p => f.solved[p.pid])) f.won = true;
+    if (f.problems.every(p => Object.prototype.hasOwnProperty.call(f.solved, p.pid))) f.won = true;
     pushG(room);
   } else if (m.t === 'dead') {
     if (!g || g.over || !g.players.has(c.id)) return;
