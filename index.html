@@ -406,7 +406,21 @@ function lsDel(k){try{localStorage.removeItem(k)}catch(e){}}
 let theme=lsGet('oi_theme')==='dark'?'dark':'light';      // 默认浅色
 function applyTheme(){document.documentElement.setAttribute('data-theme',theme)}
 applyTheme();
-let prog=(()=>{try{const p=JSON.parse(lsGet(LS_PROG));if(p&&typeof p.unlocked==='number')return p}catch(e){}return{unlocked:0,best:{},cleared:{}}})();
+let prog=(()=>{
+  try{
+    const p=JSON.parse(lsGet(LS_PROG));
+    if(p&&(typeof p.unlocked==='number'||Array.isArray(p.unlocked))){
+      const unlocked=new Set([0,11,22]);
+      if(Array.isArray(p.unlocked))p.unlocked.forEach(gi=>{if(Number.isInteger(gi)&&gi>=0&&gi<=GI_MAX)unlocked.add(gi)});
+      else for(let gi=0;gi<=Math.max(0,Math.min(GI_MAX,p.unlocked));gi++)unlocked.add(gi);
+      return Object.assign({},p,{unlocked:[...unlocked].sort((a,b)=>a-b),best:p.best||{},cleared:p.cleared||{}});
+    }
+  }catch(e){}
+  return{unlocked:[0,11,22],best:{},cleared:{}};
+})();
+const isUnlocked=gi=>prog.unlocked.includes(gi);
+const unlockedCount=()=>prog.unlocked.length;
+function unlockDifficulty(gi){if(gi<=GI_MAX&&!isUnlocked(gi)){prog.unlocked.push(gi);prog.unlocked.sort((a,b)=>a-b)}}
 function saveProg(){lsSet(LS_PROG,JSON.stringify(prog))}
 function save(){if(run&&!run.mp){lsSet(LS_RUN,JSON.stringify(run))}syncStatus()}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -442,7 +456,7 @@ function startAct(){
   lastMapAct=null;
 }
 function startRun(gi,seed,mp){
-  if(gi>prog.unlocked){toast('该难度尚未解锁');return}
+  if(!isUnlocked(gi)){toast('该难度尚未解锁');return}
   run=newRun(gi,seed||Math.random().toString(36).slice(2,8));
   run.mp=!!mp;curStroke=null;drawMode=false;
   startAct();save();view='game';render();
@@ -512,7 +526,7 @@ function leaveRoom(){
     }else{
       run.victory=true;next='finish';
       prog.cleared[run.gi]=true;
-      if(run.gi<GI_MAX)prog.unlocked=Math.max(prog.unlocked,run.gi+1);
+      if(run.gi<GI_MAX)unlockDifficulty(run.gi+1);
       saveProg();
     }
   }
@@ -840,7 +854,7 @@ function netConnect(url,room,name){
   ws.onclose=()=>{if(net.ws===ws){net.connected=false;net.members={};if(!net.err)net.err='连接已断开';render()}};
   ws.onmessage=ev=>{let m;try{m=JSON.parse(ev.data)}catch(e){return}onNet(m)};
 }
-function netLeave(){if(net.ws){try{net.ws.close()}catch(e){}}net.ws=null;net.connected=false;net.members={};net.started=false;net.chat=[];net.err='';net.spectate=false;net.g=null;render()}
+function netLeave(){if(net.ws){netSend({t:'leave'});try{net.ws.close()}catch(e){}}net.ws=null;net.connected=false;net.members={};net.started=false;net.chat=[];net.err='';net.spectate=false;net.g=null;render()}
 function setMembers(list){
   const old=net.members;net.members={};
   list.forEach(m=>{net.members[m.id]={name:m.name,s:m.s||(old[m.id]&&old[m.id].s)||null,at:Date.now()}});
@@ -856,7 +870,7 @@ function onNet(m){
   else if(m.t==='start'){
     net.started=true;net.config=m.config;net.g=null;
     const gi=cfgGi(m.config);
-    if(gi>prog.unlocked){net.spectate=true;netSend({t:'spectate'});view='lobby';render();toast('你尚未解锁「'+giName(gi)+'」，本局只能观战')}
+    if(!isUnlocked(gi)){net.spectate=true;netSend({t:'spectate'});view='lobby';render();toast('你尚未解锁「'+giName(gi)+'」，本局只能观战')}
     else{net.spectate=false;startRun(gi,m.config.seed,true);toast('对局开始：'+giName(gi)+'，种子 '+m.config.seed)}
   }
   else if(m.t==='g'){net.g=m.g;onGUpdate()}
@@ -952,13 +966,13 @@ function menuHTML(){
       <button data-a="goRules">规则说明</button>
     </div>
     <div class="legend-row">${TIERS.map(t=>`<span class="chip">${t.n} · ${tierBar(t)}</span>`).join('')}</div>
-    <p class="dim mono">已解锁 ${prog.unlocked+1} / ${GI_MAX+1} 个难度</p>
+    <p class="dim mono">已解锁 ${unlockedCount()} / ${GI_MAX+1} 个难度</p>
   </div>`;
 }
 function rulesHTML(){
   return `<div class="wrap"><div class="panel" style="display:flex;flex-direction:column;gap:10px;max-width:760px;margin:20px auto">
     <h2>规则说明</h2>
-    <p><b>目标</b>：共 3 个大难度：普及、提高、省选，每个大难度里都有 11 个难度（0 ~ 10）。每个难度有 3 个阶段，每个阶段是一座 15 层的塔，尽头是 Boss。击败三个阶段的 Boss 即通关，并解锁下一个难度（普及 0 → … → 普及 10 → 提高 0 → … → 省选 10）。每个大难度的难度 10，第三阶段需要连续击败两个 Boss。</p>
+    <p><b>目标</b>：共 3 个大难度：普及、提高、省选，每个大难度里都有 11 个难度（0 ~ 10），三个大难度的难度 0 初始解锁。每个难度有 3 个阶段，每个阶段是一座 15 层的塔，尽头是 Boss。击败三个阶段的 Boss 即通关，并解锁该大难度的下一个难度。每个大难度的难度 10，第三阶段需要连续击败两个 Boss。</p>
     <p><b>先古遗民</b>：每座塔的塔底都有一位先古遗民，先领一份特殊增益（随机三选一），才能踏上第一层。</p>
     <p><b>题目颜色</b>：使用洛谷难度颜色：红（入门）、橙（普及-）、黄（普及/提高-）、绿（普及+/提高）、蓝（提高+/省选-）、紫（省选/NOI-）、黑（NOI/NOI+/CTSC）。普及：红到绿；提高：黄到蓝；省选：蓝到黑。同一个大难度里，难度越高、阶段越靠后，题目越靠近颜色范围的上限；同一阶段里 Boss 最难，其次是精英和小怪。</p>
     <p><b>战斗</b>：进入战斗房间后，页面会给出需要的题目难度颜色。你可以点「随机跳题」从洛谷离线题库（或你指定的题单）里抽题，也可以自己找。点「开始计时」，做出来后点「AC 了」。没有放弃选项。</p>
@@ -972,16 +986,16 @@ function rulesHTML(){
 }
 function selectHTML(){
   const gi=selDiff,tier=Math.floor(gi/11),d=gi%11,t=TIERS[tier];
-  const tabs=TIERS.map((x,i)=>`<button class="${i===tier?'primary':''}" data-a="pickTier" data-t="${i}">${x.n}${i*11>prog.unlocked?'（未解锁）':''}</button>`).join('');
+  const tabs=TIERS.map((x,i)=>`<button class="${i===tier?'primary':''}" data-a="pickTier" data-t="${i}">${x.n}</button>`).join('');
   const cards=[];
   for(let i=0;i<=10;i++){
-    const g=tier*11+i,lock=g>prog.unlocked,b=prog.best[g]||0,cl=prog.cleared[g];
+    const g=tier*11+i,lock=!isUnlocked(g),b=prog.best[g]||0,cl=prog.cleared[g];
     cards.push(`<button class="dcard ${g===gi?'on':''} ${lock?'lock':''}" data-a="pickDiff" data-d="${g}">
       <span class="row"><b class="mono">难度 ${i}</b><span>${DNAMES[i]}</span>${lock?'<span class="dim">已锁定</span>':cl?'<span class="chip">已通关</span>':''}</span>
       <span class="dots">${[1,2,3].map(s=>`<i class="${cl||s<b?'f':''}"></i>`).join('')}</span></button>`);
   }
   const mods=MODS.slice(0,d+1).map((m,i)=>`<li class="${i===d?'new':''}">${m}</li>`).join('');
-  const locked=gi>prog.unlocked;
+  const locked=!isUnlocked(gi);
   return `<div class="wrap"><div class="row" style="margin-bottom:12px"><button data-a="goMenu">返回</button><h2>选择难度</h2><span class="spacer"></span><div class="row">${tabs}</div></div>
   <div class="sel"><div class="dgrid">${cards.join('')}</div>
   <div class="panel"><h2>${t.n} · 难度 ${d} · ${DNAMES[d]}</h2>
@@ -1445,7 +1459,7 @@ function lobbyHTML(){
       <button class="primary" data-a="join">加入 / 创建房间</button></div></div>`;
   }
   const isHost=net.host===net.id;
-  const opts=[...Array(prog.unlocked+1)].map((_,i)=>`<option value="${i}">${giName(i)}</option>`).join('');
+  const opts=prog.unlocked.map(i=>`<option value="${i}">${giName(i)}</option>`).join('');
   let ctl;
   if(net.spectate)ctl=`<div class="msg">你没有参与本局（未解锁「${giName(cfgGi(net.config))}」，或是中途加入），只能观战队友。</div>`;
   else if(net.started)ctl=`<div class="msg">对局已开始（${giName(cfgGi(net.config))}，种子 ${esc(net.config.seed)}）。</div>
@@ -1489,7 +1503,7 @@ $app.addEventListener('click',e=>{
   switch(a){
     case 'goMenu':view='menu';render();break;
     case 'goRules':view='rules';render();break;
-    case 'goSelect':selDiff=Math.min(selDiff,prog.unlocked);view='select';render();break;
+    case 'goSelect':if(!isUnlocked(selDiff))selDiff=prog.unlocked[0];view='select';render();break;
     case 'pickDiff':selDiff=+d.d;render();break;
     case 'pickTier':selDiff=+d.t*11+(selDiff%11);render();break;
     case 'theme':theme=theme==='dark'?'light':'dark';lsSet('oi_theme',theme);applyTheme();render();break;
@@ -1536,7 +1550,7 @@ $app.addEventListener('click',e=>{
     case 'evt':eventChoose(+d.i);break;
     case 'endBack':if(run&&run.over)lsDel(LS_RUN);run=null;view=net.connected?'lobby':'menu';render();break;
     case 'nextDiff':startRun(run.gi+1,null);break;
-    case 'resetProg':if(d.sure){prog={unlocked:0,best:{},cleared:{}};saveProg();lsDel(LS_RUN);toast('进度已清空');view='menu';render()}else{t.dataset.sure=1;t.textContent='再点一次确认清空'}break;
+    case 'resetProg':if(d.sure){prog={unlocked:[0,11,22],best:{},cleared:{}};saveProg();lsDel(LS_RUN);toast('进度已清空');view='menu';render()}else{t.dataset.sure=1;t.textContent='再点一次确认清空'}break;
     case 'toLobby':case 'goLobby':view='lobby';render();break;
     case 'toGame':view='game';render();break;
     case 'join':{

@@ -187,7 +187,9 @@ function handle(c, m) {
   const room = c.room; if (!room) return;
   const g = room.game;
 
-  if (m.t === 'status') {
+  if (m.t === 'leave') {
+    leave(c);
+  } else if (m.t === 'status') {
     c.status = m.s && typeof m.s === 'object' ? m.s : null;
     broadcast(room, { t: 'status', id: c.id, s: c.status }, c);
   } else if (m.t === 'chat') {
