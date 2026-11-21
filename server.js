@@ -4,8 +4,12 @@
 // 联机规则（与杀戮尖塔 2 一致）：全队共享同一张地图与进度。
 //   投票阶段：所有存活玩家各投一个节点，票数最多者胜出（平票随机），然后全队一起进入该房间。
 //   房间阶段：每人在自己的房间里独立结算，全部完成后回到投票阶段。
+//   战斗房间：全队共用同一组题（任何人抽题，所有人看到同一组；题数 = floor(人数/3*2)，至少 1）。
+//             任何一个人做出某道题，这道题就算被击败；全部击败后，每个人各自结算奖励。
+//   题单：GET /api/training?id=<洛谷题单编号> 由服务器去洛谷抓取题单里的题号（浏览器直接请求会被跨域拦截）。
 //   倒下或掉线的玩家改为观战，不再计入投票与完成；全部倒下则本局失败。
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -14,8 +18,70 @@ const PORT = process.env.PORT || 8787;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_MSG = 64 * 1024;
 
+/* ---------- 洛谷题单抓取 ---------- */
+const LUOGU_BASE = process.env.LUOGU_BASE || 'https://www.luogu.com.cn';   // 测试时可指向本地假服务器
+function httpGet(urlStr, headers, hops) {
+  return new Promise((resolve, reject) => {
+    let u; try { u = new URL(urlStr); } catch (e) { return reject(e); }
+    const mod = u.protocol === 'http:' ? http : https;
+    const req = mod.get(u, { headers: Object.assign({ 'User-Agent': 'Mozilla/5.0 (OI-Spire-II)', 'Accept': 'application/json,text/html' }, headers || {}), timeout: 12000 }, r => {
+      if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location && (hops || 0) < 3) {
+        r.resume();
+        return resolve(httpGet(new URL(r.headers.location, u).toString(), headers, (hops || 0) + 1));
+      }
+      const chunks = []; let n = 0;
+      r.on('data', d => { n += d.length; if (n > 4e6) { req.destroy(new Error('响应过大')); } else chunks.push(d); });
+      r.on('end', () => resolve({ status: r.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('timeout', () => req.destroy(new Error('请求超时')));
+    req.on('error', reject);
+  });
+}
+// 解析洛谷题单：兼容 ?_contentOnly=1 的 JSON，以及页面里的 lentille-context
+function parseTraining(text) {
+  let j = null;
+  try { j = JSON.parse(text); } catch (e) {}
+  if (!j) {
+    const m = text.match(/<script id="lentille-context"[^>]*>([\s\S]*?)<\/script>/);
+    if (m) { try { j = JSON.parse(m[1]); } catch (e) {} }
+  }
+  if (!j || typeof j !== 'object') return null;
+  const data = j.currentData || j.data || j;
+  const tr = (data && data.training) || data;
+  const list = tr && Array.isArray(tr.problems) ? tr.problems : null;
+  if (!list) return null;
+  const problems = [], seen = new Set();
+  for (const it of list) {
+    const p = it && (it.problem || it);
+    if (!p || typeof p.pid !== 'string' || !/^[A-Za-z0-9_]{1,20}$/.test(p.pid) || seen.has(p.pid)) continue;
+    seen.add(p.pid);
+    problems.push({ pid: p.pid, title: String(p.title || '').slice(0, 80), diff: Number.isInteger(p.difficulty) ? p.difficulty : -1 });
+  }
+  return { name: String(tr.title || tr.name || '').slice(0, 60), problems };
+}
+async function fetchTraining(id) {
+  const base = LUOGU_BASE + '/training/' + id;
+  let r = await httpGet(base + '?_contentOnly=1', { 'x-lentille-request': 'content-only' });
+  let t = parseTraining(r.text);
+  if (!t) { r = await httpGet(base, {}); t = parseTraining(r.text); }
+  if (!t) throw new Error(r.status === 404 ? '题单不存在' : '无法解析题单页面（题单可能不存在、未公开，或需要登录）');
+  if (!t.problems.length) throw new Error('这个题单里没有题目');
+  return t;
+}
+function sendJson(res, code, obj) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+  res.end(JSON.stringify(obj));
+}
+
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
+  if (url === '/api/training') {
+    const id = new URL(req.url, 'http://x').searchParams.get('id') || '';
+    if (!/^\d{1,9}$/.test(id)) return sendJson(res, 400, { error: '题单编号必须是数字' });
+    fetchTraining(id).then(t => sendJson(res, 200, { id, name: t.name, problems: t.problems }),
+                           e => sendJson(res, 502, { error: e.message || String(e) }));
+    return;
+  }
   if (url === '/' || url === '/index.html') {
     fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('index.html not found'); return; }
@@ -44,12 +110,17 @@ function memberList(room) { return [...room.members.values()].map(m => ({ id: m.
 function broadcast(room, obj, except) { for (const m of room.members.values()) if (m !== except) send(m, obj); }
 
 /* ---------- 全队进度（投票 / 房间） ---------- */
+function mkFight(g) {
+  return { need: Math.max(1, Math.floor(g.players.size * 2 / 3)), problems: null, solved: {}, started: false, won: false };
+}
 function newGame(room) {
-  return { phase: 'room', step: 0, votes: {}, done: {}, players: new Set(room.members.keys()), over: false };
+  const g = { phase: 'room', step: 0, votes: {}, done: {}, players: new Set(room.members.keys()), over: false };
+  g.fight = mkFight(g);
+  return g;
 }
 function gState(room) {
   const g = room.game; if (!g) return null;
-  return { phase: g.phase, step: g.step, votes: g.votes, done: Object.keys(g.done), players: [...g.players], over: g.over };
+  return { phase: g.phase, step: g.step, votes: g.votes, done: Object.keys(g.done), players: [...g.players], over: g.over, fight: g.fight };
 }
 function pushG(room) { broadcast(room, { t: 'g', g: gState(room) }); }
 
@@ -65,7 +136,7 @@ function step(room) {
     const mx = Math.max(...Object.values(cnt));
     const top = Object.keys(cnt).filter(k => cnt[k] === mx);
     const [r, c] = top[Math.floor(Math.random() * top.length)].split(',').map(Number);
-    g.phase = 'room'; g.done = {}; g.votes = {}; g.step++;
+    g.phase = 'room'; g.done = {}; g.votes = {}; g.step++; g.fight = mkFight(g);
     pushG(room); broadcast(room, { t: 'go', r, c, step: g.step });
     return;
   }
@@ -75,7 +146,7 @@ function step(room) {
     const nx = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
     g.done = {}; g.votes = {};
     if (nx === 'finish') { g.over = true; pushG(room); broadcast(room, { t: 'finished' }); return; }
-    if (nx === 'ancient') { g.step++; pushG(room); broadcast(room, { t: 'go', r: -1, c: 3, step: g.step }); return; }
+    if (nx === 'ancient') { g.step++; g.fight = mkFight(g); pushG(room); broadcast(room, { t: 'go', r: -1, c: 3, step: g.step }); return; }
     g.phase = 'vote'; pushG(room); return;
   }
   pushG(room);
@@ -125,10 +196,11 @@ function handle(c, m) {
   } else if (m.t === 'start') {
     if (room.host !== c.id) return send(c, { t: 'error', msg: '只有房主可以开始对局' });
     if (room.started) return send(c, { t: 'error', msg: '对局已经开始' });
-    const d = Number(m.difficulty);
+    const d = Number(m.difficulty), tr = Number(m.tier);
     const difficulty = Math.max(0, Math.min(10, Number.isFinite(d) ? Math.floor(d) : 0));
+    const tier = Math.max(0, Math.min(2, Number.isFinite(tr) ? Math.floor(tr) : 0));
     const seed = String(m.seed || Math.random().toString(36).slice(2, 8)).slice(0, 20);
-    room.started = true; room.config = { difficulty, seed };
+    room.started = true; room.config = { tier, difficulty, seed };
     room.game = newGame(room);
     for (const mm of room.members.values()) mm.status = null;
     broadcast(room, { t: 'start', config: room.config });
@@ -151,6 +223,31 @@ function handle(c, m) {
     const next = ['vote', 'ancient', 'finish'].includes(m.next) ? m.next : 'vote';
     g.done[c.id] = { next };
     step(room);
+  } else if (m.t === 'pset') {
+    if (!g || g.over || g.phase !== 'room' || !g.players.has(c.id)) return;
+    const f = g.fight; if (f.started || f.won) return;
+    const clean = [], seen = new Set();
+    for (const p of (Array.isArray(m.problems) ? m.problems : [])) {
+      if (!p || typeof p.pid !== 'string' || !/^[A-Za-z0-9_]{1,20}$/.test(p.pid) || seen.has(p.pid)) continue;
+      seen.add(p.pid);
+      clean.push({ pid: p.pid, title: String(p.title || '').slice(0, 60), diff: Number.isInteger(p.diff) ? p.diff : -1 });
+      if (clean.length >= f.need) break;
+    }
+    if (!clean.length) return send(c, { t: 'error', msg: '题目无效' });
+    f.problems = clean; f.solved = {};
+    pushG(room);
+  } else if (m.t === 'pstart') {
+    if (!g || g.over || g.phase !== 'room' || !g.players.has(c.id)) return;
+    const f = g.fight; if (!f.problems || f.started) return;
+    f.started = true; pushG(room);
+  } else if (m.t === 'psolve') {
+    if (!g || g.over || g.phase !== 'room' || !g.players.has(c.id)) return;
+    const f = g.fight; if (!f.started || f.won || !f.problems) return;
+    const pid = String(m.pid || '');
+    if (!f.problems.some(p => p.pid === pid) || f.solved[pid]) return;
+    f.solved[pid] = { id: c.id, name: c.name };
+    if (f.problems.every(p => f.solved[p.pid])) f.won = true;
+    pushG(room);
   } else if (m.t === 'dead') {
     if (!g || g.over || !g.players.has(c.id)) return;
     dropPlayer(room, c.id); step(room);
