@@ -58,7 +58,7 @@ details summary{cursor:pointer}
 
 /* 标签：界面标签一律黑白；.lv1~.lv7 是题目难度颜色 */
 .chip{display:inline-flex;align-items:center;gap:.4em;padding:.05em .6em;border-radius:99px;border:1px solid currentColor;font-size:12px;white-space:nowrap}
-.lv1{color:var(--lv1)} .lv2{color:var(--lv2)} .lv3{color:var(--lv3)} .lv4{color:var(--lv4)} .lv5{color:var(--lv5)} .lv6{color:var(--lv6)}
+.lv0{color:var(--dim)} .lv1{color:var(--lv1)} .lv2{color:var(--lv2)} .lv3{color:var(--lv3)} .lv4{color:var(--lv4)} .lv5{color:var(--lv5)} .lv6{color:var(--lv6)}
 .lv7{background:#000;color:#fff;border-color:#000}
 :root[data-theme="dark"] .lv7{border-color:#8a8a8a}
 .swrow{display:inline-flex;gap:2px;vertical-align:middle}
@@ -199,15 +199,15 @@ const DNAMES=['起步','热身','初试','小试牛刀','渐入佳境','中段�
 /* 三个大难度，每个都有 0~10 共 11 个进阶。lo/hi 是该大难度的题目难度范围（洛谷难度数值） */
 const TIERS=[{n:'普及',lo:1,hi:4},{n:'提高',lo:3,hi:5},{n:'省选',lo:5,hi:7}];
 /* 洛谷难度数值 -> 颜色与名称（c：颜色，n：官方名称） */
-const LV=[null,{c:'红',n:'入门'},{c:'橙',n:'普及-'},{c:'黄',n:'普及/提高-'},{c:'绿',n:'普及+/提高'},{c:'蓝',n:'提高+/省选-'},{c:'紫',n:'省选/NOI-'},{c:'黑',n:'NOI/NOI+/CTSC'}];
+const LV=[{c:'灰',n:'未评定'},{c:'红',n:'入门'},{c:'橙',n:'普及-'},{c:'黄',n:'普及/提高-'},{c:'绿',n:'普及+/提高'},{c:'蓝',n:'提高+/省选-'},{c:'紫',n:'省选/NOI-'},{c:'黑',n:'NOI/NOI+/CTSC'}];
 const GI_MAX=TIERS.length*11-1;            // 全局难度序号 0..32，序号 = 大难度*11 + 难度
 const giOf=(tier,d)=>tier*11+d;
 const giName=gi=>TIERS[Math.floor(gi/11)].n+' · 进阶 '+(gi%11)+' · '+DNAMES[gi%11];
-const lvChip=v=>`<span class="chip lv lv${v}">${LV[v].c}</span>`;
+const lvChip=v=>`<span class="chip lv lv${v}">${v===0?LV[v].n:LV[v].c}</span>`;
 const lvChips=a=>a.map(lvChip).join('<span class="dim">~</span>');
 const needCount=n=>Math.max(1,Math.floor(n*2/3));   // 联机时每个战斗房间需要抽的题数：floor(人数/3*2)，至少 1
 const MODS=[
-  '基础规则：共三幕，击败每幕尽头的首领方可通关。时限：普通战斗 20 分钟、精英战斗 40 分钟、首领战斗 60 分钟；超时后每 5 分钟扣血生命。',
+  '基础规则：共三幕，击败每幕尽头的首领方可通关。普及/提高时限：普通 20 分钟、精英 40 分钟、首领 60 分钟；省选时限：普通 60 分钟、精英 90 分钟、首领 120 分钟。超时后每 5 分钟扣血。',
   '精英战斗更为常见。',
   '休息处的回复比例由 30% 降为 20%。',
   '战斗所得金币 -25%。',
@@ -454,11 +454,18 @@ const LG_TAGS={"algorithm":["语言入门","字符串","后缀自动机 SAM","�
    ===================================================================== */
 const $app=document.getElementById('app');
 let view='menu', run=null, selDiff=0, toastTimer=null, endSeen=false;
-let drawMode=false, penColor='#ff5252', curStroke=null, lgPanel=false;
-const LS_PROG='oi3_progress', LS_RUN='oi3_run', LS_NAME='oi2_name', LS_MPRUN='oi3_mprun';
+let drawMode=false, penColor='#ff5252', curStroke=null, lgPanel=false, vjPanel=false;
+let vjBinding=null,vjUsernameInput='',vjChallengeCode='',vjMessage='',vjBusy=false;
+const LS_PROG='oi3_progress', LS_RUN='oi3_run', LS_NAME='oi2_name', LS_MPRUN='oi3_mprun', LS_VJ='oi3_vjudge';
 function lsGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function lsSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
 function lsDel(k){try{localStorage.removeItem(k)}catch(e){}}
+try{const v=JSON.parse(lsGet(LS_VJ));if(v&&/^[A-Za-z0-9_.-]{1,40}$/.test(v.username||'')&&/^[a-f0-9]{64}$/.test(v.token||''))vjBinding=v}catch(e){}
+function vjForgetBinding(){
+  if(!vjBinding)return;
+  vjUsernameInput=vjBinding.username;vjBinding=null;lsDel(LS_VJ);
+  if(net.connected)netSend({t:'vbind',token:''});
+}
 let theme=lsGet('oi_theme')==='dark'?'dark':'light';      // 默认浅色
 function applyTheme(){document.documentElement.setAttribute('data-theme',theme)}
 applyTheme();
@@ -618,7 +625,8 @@ function heal(n){const b=run.hp;run.hp=Math.min(run.maxHp,run.hp+n);return run.h
 /* ---------- 战斗 ---------- */
 const cb=()=>run&&run.room&&run.room.combat;
 const GRACE={monster:20,elite:40,boss:60};
-const graceOf=k=>run.custom?run.custom.kinds[k].grace:GRACE[k];      // 时限（分钟）
+const GRACE_PROVINCIAL={monster:60,elite:90,boss:120};
+const graceOf=k=>run.custom?run.custom.kinds[k].grace:((run.tier||0)===2?GRACE_PROVINCIAL[k]:GRACE[k]);      // 时限（分钟）
 const DRAIN={monster:10,elite:10,boss:20};      // 超时后每 5 分钟扣血（基础值）
 const tickMs=k=>((run.custom?run.custom.kinds[k||run.room.kind].tick:5)+E('tickMin')+(run.actTick||0))*60000;
 const remainingMs=c=>c.graceMs+c.extraMs-(Date.now()-c.startAt);   // 距时限结束，负数表示已超时
@@ -632,8 +640,25 @@ function drainDmg(c,kind){
   if(c.partial)d=Math.max(1,Math.ceil(d/2));
   return d;
 }
-function startCombat(){
-  const c=cb();c.started=true;c.startAt=Date.now();
+async function startCombat(){
+  const r=run,rm=r&&r.room,c=rm&&rm.combat;
+  if(!c||c.started||c.vjStarting)return;
+  if(!r.mp&&vjBinding){
+    if(!rm.problem){toast('请先选定题目，再开始 VJudge 验证计时');return}
+    c.vjStarting=true;render();
+    try{
+      const data=await vjPost('/api/vjudge/start',{token:vjBinding.token,pid:rm.problem.pid});
+      if(run!==r||r.room!==rm||rm.combat!==c)return;
+      c.vjBattleId=data.battleId;c.vjStartedAt=data.startedAt;
+    }catch(e){
+      if((e.message||'').includes('绑定已失效'))vjForgetBinding();
+      if(run===r&&r.room===rm){c.vjStarting=false;render();toast('无法开始 VJudge 验证：'+(e.message||'请求失败'))}
+      return;
+    }
+    c.vjStarting=false;
+  }
+  if(run!==r||r.room!==rm||rm.combat!==c)return;
+  c.started=true;c.startAt=Date.now();
   if(run.shieldLeft>0){run.shieldLeft--;c.shielded=true}
   else if(run.freeFights>0){run.freeFights--;c.shielded=true}
   run.room.phase='fight';save();render();
@@ -983,7 +1008,7 @@ function doConnect(){
   if(net.ws){const o=net.ws;o.onclose=null;o.onmessage=null;try{o.close()}catch(e){}net.ws=null}
   let ws;try{ws=new WebSocket(w.url)}catch(e){net.err='服务器地址无效';dropWant();render();return}
   net.ws=ws;
-  ws.onopen=()=>{net.lastRx=Date.now();try{ws.send(JSON.stringify({t:'join',room:w.room,name:w.name,cid:getCid()}))}catch(e){}};
+  ws.onopen=()=>{net.lastRx=Date.now();try{ws.send(JSON.stringify({t:'join',room:w.room,name:w.name,cid:getCid(),vjToken:vjBinding&&vjBinding.token}))}catch(e){}};
   ws.onmessage=ev=>{net.lastRx=Date.now();let m;try{m=JSON.parse(ev.data)}catch(e){return}onNet(m)};
   ws.onerror=()=>{};
   ws.onclose=()=>{if(net.ws!==ws)return;net.ws=null;net.connected=false;linkLost()};
@@ -1018,6 +1043,7 @@ function onNet(m){
     const again=net.joinedOnce;
     net.connected=true;net.reconnecting=false;net.joinedOnce=true;net.retry=0;net.err='';
     net.id=m.you;net.room=m.room;net.host=m.host;net.started=m.started;net.config=m.config;net.g=m.g||null;
+    if(vjBinding&&!m.vjBound){vjForgetBinding();toast('VJudge 服务器绑定已失效，请重新绑定')}
     if(!again)net.chat=[];
     setMembers(m.members);
     let inGame=false;
@@ -1077,6 +1103,8 @@ function curProblems(){
 function onGUpdate(){
   if(isMP()&&run&&!run.over&&run.room&&run.room.combat){
     const f=net.g&&net.g.fight,rm=run.room;
+    if(f&&f.solved)Object.keys(f.solved).forEach(pid=>{if(!lgDone.has(pid))lgMarkDone(pid)});
+    if(f&&f.startedAt)rm.combat.vjStartedAt=f.startedAt;
     if(f&&f.started&&rm.phase==='prep'){startCombat();return}                      // 有人点了开始：全队同时开始计时
     if(f&&f.won&&rm.phase==='fight'&&!rm.combat.done){winCombat();return}          // 所有题目都被击败
   }
@@ -1115,6 +1143,7 @@ function render(){
     else if(view==='game'&&run)$app.innerHTML=gameHTML();
     else $app.innerHTML=menuHTML();
     if(lgPanel&&view!=='game')$app.insertAdjacentHTML('beforeend',lgPanelHTML());
+    if(vjPanel)$app.insertAdjacentHTML('beforeend',vjPanelHTML());
     $app.insertAdjacentHTML('beforeend','<button class="themefab" data-a="theme">'+(theme==='dark'?'浅色模式':'深色模式')+'</button>');
   });
   const mw=document.getElementById('mapwrap');
@@ -1145,8 +1174,8 @@ const cloneC=o=>JSON.parse(JSON.stringify(o));
 let cust=(()=>{const d=cloneC(CUST_DEF);try{const x=JSON.parse(lsGet('oi3_custom'));if(x&&x.m&&x.e&&x.b){for(const k of['m','e','b'])Object.assign(d[k],x[k]);for(const k of Object.keys(d))if(!['m','e','b'].includes(k)&&x[k]!==undefined)d[k]=x[k]}}catch(e){}return d})();
 const cgetP=(o,p)=>p.split('.').reduce((a,k)=>a[k],o);
 const csetP=(o,p,v)=>{const ks=p.split('.');const l=ks.pop();ks.reduce((a,k)=>a[k],o)[l]=v};
-const CNUM=[['m.grace',1,600],['m.tick',1,120],['m.drain',0,200],['m.lo',1,7],['m.hi',1,7],['e.grace',1,600],['e.tick',1,120],['e.drain',0,200],['e.lo',1,7],['e.hi',1,7],
-  ['b.grace',1,600],['b.tick',1,120],['b.drain',0,200],['b.lo',1,7],['b.hi',1,7],['hp',10,9999],['gold',0,99999],['slots',0,10],['goldPct',0,1000],['shopPct',10,1000],['restPct',0,100],['eliteW',0,60],['actHeal',0,100]];
+const CNUM=[['m.grace',1,600],['m.tick',1,120],['m.drain',0,200],['m.lo',0,7],['m.hi',0,7],['e.grace',1,600],['e.tick',1,120],['e.drain',0,200],['e.lo',0,7],['e.hi',0,7],
+  ['b.grace',1,600],['b.tick',1,120],['b.drain',0,200],['b.lo',0,7],['b.hi',0,7],['hp',10,9999],['gold',0,99999],['slots',0,10],['goldPct',0,1000],['shopPct',10,1000],['restPct',0,100],['eliteW',0,60],['actHeal',0,100]];
 function custReadDom(){
   for(const [p,lo,hi] of CNUM){const el=document.getElementById('cf_'+p);if(!el)continue;let v=Math.round(Number(el.value));if(!isFinite(v))v=cgetP(CUST_DEF,p);csetP(cust,p,Math.max(lo,Math.min(hi,v)))}
   for(const k of['m','e','b'])if(cust[k].lo>cust[k].hi){const t=cust[k].lo;cust[k].lo=cust[k].hi;cust[k].hi=t}
@@ -1165,13 +1194,13 @@ function buildCustom(){
 }
 function customHTML(){
   const num=(p,lo,hi)=>`<input type="number" id="cf_${p}" min="${lo}" max="${hi}" step="1" value="${cgetP(cust,p)}" style="width:5.5em">`;
-  const row=(k,name)=>`<tr><th style="text-align:left">${name}</th><td>${num(k+'.grace',1,600)}</td><td>${num(k+'.tick',1,120)}</td><td>${num(k+'.drain',0,200)}</td><td>${num(k+'.lo',1,7)} ~ ${num(k+'.hi',1,7)}</td></tr>`;
+  const row=(k,name)=>`<tr><th style="text-align:left">${name}</th><td>${num(k+'.grace',1,600)}</td><td>${num(k+'.tick',1,120)}</td><td>${num(k+'.drain',0,200)}</td><td>${num(k+'.lo',0,7)} ~ ${num(k+'.hi',0,7)}</td></tr>`;
   return `<div class="wrap"><div class="row" style="margin-bottom:12px"><button data-a="goMenu">返回</button><h2>自定义模式</h2><span class="spacer"></span>
     <button data-a="custPreset" data-p="easy">宽松</button><button data-a="custPreset" data-p="normal">默认</button><button data-a="custPreset" data-p="hard">严苛</button></div>
   <div class="panel" style="display:flex;flex-direction:column;gap:12px">
-    <p class="dim" style="margin:0">自行设定各类战斗的时限、超时扣血与题目难度（洛谷难度 1 红 ~ 7 黑），再配上若干全局参数。自定义的对局不计入解锁进度，仅限单人。超时扣血填 0 表示不会因超时掉生命。</p>
+    <p class="dim" style="margin:0">自行设定各类战斗的时限、超时扣血与题目难度（洛谷难度 0 未评定 ~ 7 黑），再配上若干全局参数。自定义的对局不计入解锁进度，仅限单人。超时扣血填 0 表示不会因超时掉生命。</p>
     <div style="overflow-x:auto"><table style="border-collapse:separate;border-spacing:8px 6px">
-      <thead><tr class="dim"><th></th><th>时限（分钟）</th><th>超时间隔（分钟）</th><th>每次扣血（生命）</th><th>题目难度（1~7）</th></tr></thead>
+      <thead><tr class="dim"><th></th><th>时限（分钟）</th><th>超时间隔（分钟）</th><th>每次扣血（生命）</th><th>题目难度（0~7）</th></tr></thead>
       <tbody>${row('m','普通战斗')}${row('e','精英战斗')}${row('b','首领战斗')}</tbody></table></div>
     <div class="row" style="gap:10px 20px">
       <label>初始生命 ${num('hp',10,9999)}</label><label>初始金币 ${num('gold',0,99999)}</label><label>药水栏位 ${num('slots',0,10)}</label>
@@ -1196,6 +1225,7 @@ function menuHTML(){
       <button class="${saved?'':'primary'}" data-a="goSelect">单人爬塔</button>
       <button data-a="goCustom">自定义模式</button>
       <button data-a="goLobby">多人联机</button>
+      <button data-a="vjPanel">${vjBinding?'VJudge：'+esc(vjBinding.username):'绑定 VJudge'}</button>
       <button data-a="lgPanel">题库 / 题单设置</button>
       <button data-a="goRules">规则说明</button>
     </div>
@@ -1211,8 +1241,8 @@ function rulesHTML(){
     <p><b>总览</b>：设「普及」「提高」「省选」三大难度，每个大难度各含进阶 0 至 10 共 11 级。每级须依次闯过三幕，每幕是一座十五层的高塔，塔顶有首领镇守。击败三幕首领即为通关。各大难度的进阶 0 一开始即可挑战；通关某一级后，同一大难度的下一级随之解锁。各大难度的进阶 10，第三幕须连续击败两位首领。</p>
     <p><b>先古之民</b>：每座塔的塔底都有一位先古之民，须先领受一份馈赠（随机三选一），方可踏上第一层。</p>
     <p><b>题目颜色</b>：沿用洛谷难度颜色：红（入门）、橙（普及-）、黄（普及/提高-）、绿（普及+/提高）、蓝（提高+/省选-）、紫（省选/NOI-）、黑（NOI/NOI+/CTSC）。普及：红至绿；提高：黄至蓝；省选：蓝至黑。同一大难度中，难度级别越高、所在重数越靠后，题目越接近色带上端；同一重内，首领战斗最难，精英战斗次之，普通战斗最易。</p>
-    <p><b>战斗</b>：进入战斗后，页面给出所需的题目颜色。可点「随机跳题」从洛谷离线题库（或你指定的题单）中抽题，也可自行跳题。点「开始计时」，AC后点「AC 了」。战斗没有退路：要么AC，要么生命耗尽。</p>
-    <p><b>时限与超时</b>：时限之内不扣生命：普通战斗 20 分钟，精英战斗 40 分钟，首领战斗 60 分钟。超时之后，每满 5 分钟失去一次生命（普通 10、精英 10、首领 20，随幕数与难度递增），直至AC。生命归零则本次爬塔结束。计时依系统时间，刷新页面不会重置。</p>
+    <p><b>战斗</b>：进入战斗后，页面给出所需的题目颜色。可点「随机跳题」从洛谷离线题库（或你指定的题单）中抽题，也可自行跳题。绑定 VJudge 后，单人战斗须先选题，开始计时后在 VJudge 提交洛谷题目，再点「验证 VJudge AC」；联机时，绑定账号提交的 AC 也会由服务器核验。未绑定账号仍可手动确认。战斗没有退路：要么AC，要么生命耗尽。</p>
+    <p><b>时限与超时</b>：时限之内不扣生命。普及、提高难度下，普通战斗 20 分钟、精英战斗 40 分钟、首领战斗 60 分钟；省选难度下分别为 60、90、120 分钟。超时之后，每满 5 分钟失去一次生命（普通 10、精英 10、首领 20，随幕数与难度递增），直至 AC。生命归零则本次爬塔结束。计时依系统时间，刷新页面不会重置。</p>
     <p><b>题单</b>：在「题库 / 题单设置」中可添加一个或多个洛谷题单（填写编号或链接），勾选后随机跳题只会从其中抽取。抓取题单须经由 <span class="mono">node server.js</span>，亦可手动粘贴题号导入。</p>
     <p><b>规划路径</b>：点「规划路径」，即可在地图上自由描画；多人联机时，同伴也能看到你的笔迹。</p>
     <p><b>关卡</b>：普通战斗、精英战斗、未知之地（四十余种事件，也可能化作战斗、商店或宝箱）、休息处、商店、宝箱。精英战斗必掉遗物，首领战斗可三选一。</p>
@@ -1275,7 +1305,7 @@ function hudHTML(){
     ${pend?`<div class="grp pots">${pend}</div>`:''}
     <div class="grp relics">${rel||'<span class="dim">暂无遗物</span>'}</div>
     <span class="spacer"></span>
-    <div class="grp"><span class="dim mono">种子 ${esc(run.seed)}</span><button data-a="toLobby">联机</button><button data-a="goMenu">菜单</button></div></div>`;
+    <div class="grp"><button data-a="vjPanel">${vjBinding?'VJudge '+esc(vjBinding.username):'绑定 VJudge'}</button><span class="dim mono">种子 ${esc(run.seed)}</span><button data-a="toLobby">联机</button><button data-a="goMenu">菜单</button></div></div>`;
 }
 const PENS=['#ff5252','#ffd166','#4ade80','#38bdf8','#e879f9'];
 const PCOL=['#ff6b6b','#4cc9f0','#ffd166','#b794f6','#4ade80','#fb923c','#f472b6','#94a3b8','#22d3ee','#a3e635','#f87171','#c084fc'];
@@ -1419,8 +1449,9 @@ function roomHTML(){
       <div class="msg mono">时限 ${lim} 分钟${c.bonusMin?`（基础 ${c.baseMin}，加成 +${c.bonusMin}）`:''}。超时后每 ${tickMs()/60000} 分钟失去 ${dm} 点生命，直至${mp?'全部题目被击败':'你 AC 该题'}。</div>
       ${lgHintHTML(rm,levels)}
       ${mp?probListHTML(probs,false)+manualHTML(need):(rm.problem?probLink(rm):'')}
+      ${vjBinding&&!mp&&rm.problem?`<div class="msg">绑定账号的 AC 需在本场计时开始后，通过 <a href="https://vjudge.net/problem" target="_blank" rel="noopener">VJudge 题库</a> 搜索并提交这道洛谷题目。</div>`:''}
       <p class="dim" style="margin:0">战斗没有退路：要么AC，要么生命耗尽。</p>
-      <button class="primary" data-a="startCombat" ${mp&&!probs.length?'disabled':''}>${mp?'开始计时（全队同时开始）':'择定了，开始计时'}</button>${tt}`;
+      <button class="primary" data-a="startCombat" ${(mp&&!probs.length)||(!mp&&vjBinding&&!rm.problem)||c.vjStarting?'disabled':''}>${c.vjStarting?'正在连接 VJudge…':mp?'开始计时（全队同时开始）':'择定了，开始计时'}</button>${tt}`;
     }else if(rm.phase==='fight'){
       const pb=run.potions.map((id,i)=>`<button class="pot" data-a="usePotion" data-i="${i}" title="${esc(POTIONS[id].d)}">${POTIONS[id].n}</button>`).join('');
       const flags=[c.insured?'无忧':'',c.partial?'化解':'',c.lucky?'福运':'',c.shielded?'护符':'',c.guard?'金刚':''].filter(Boolean).map(x=>`<span class="chip">${x}</span>`).join(' ');
@@ -1430,7 +1461,8 @@ function roomHTML(){
       <p class="dim" style="margin:0;text-align:center">题目难度 ${lvTag} · 建议题型 ${esc(rm.topic)} ${flags}</p>
       ${pb?`<div class="row"><span class="dim">药水</span>${pb}</div>`:''}
       ${mp?probListHTML(curProblems(),true):probHTML(rm)}
-      ${mp?'':'<div class="row" style="justify-content:center"><button class="primary" data-a="ac">AC 了</button></div>'}${tt}`;
+      ${vjBinding&&mp?`<p class="dim" style="margin:0;text-align:center">请在 <a href="https://vjudge.net/problem" target="_blank" rel="noopener">VJudge 题库</a> 搜索洛谷题号并提交；服务器会核对本场开始后的提交。</p>`:''}
+      ${mp?'':`<div class="row" style="justify-content:center"><button class="primary" data-a="${vjBinding?'verifySoloAc':'ac'}" ${c.vjChecking?'disabled':''}>${c.vjChecking?'正在查询 VJudge…':vjBinding?'验证 VJudge AC':'AC 了'}</button></div>`}${tt}`;
     }else if(rm.phase==='won'){
       const rw=rm.rewards,full=run.potions.length>=slotCount();
       body=`<div class="msg">题目已击败。获得 <b>${rw.gold}</b> 金币${rw.heal?`，回复 ${rw.heal} 点生命`:''}。${c.lost?`本场超时共失去 ${c.lost} 点生命。`:''}</div>`;
@@ -1621,6 +1653,75 @@ function apiBase(){
   if(/^https?:$/.test(location.protocol))return '';
   try{const u=new URL(net.url||defaultWs());return (u.protocol==='wss:'?'https://':'http://')+u.host}catch(e){return 'http://localhost:8787'}
 }
+async function vjPost(route,body){
+  const res=await fetch(apiBase()+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok)throw new Error(data.error||('HTTP '+res.status));
+  return data;
+}
+function vjPanelHTML(){
+  const bound=vjBinding;
+  let content='';
+  if(bound){
+    content=`<div class="msg">已绑定 VJudge 账号 <b>${esc(bound.username)}</b>。单人战斗会核对本场开始后的洛谷 AC；联机时，绑定账号提交的 AC 也会由服务器核验。</div>
+      <p class="dim" style="margin:0">验证使用 VJudge 公开提交记录，不需要提供洛谷密码或 Cookie。解除绑定后将恢复手动确认。</p>
+      <div class="row"><a href="https://vjudge.net/user/${encodeURIComponent(bound.username)}" target="_blank" rel="noopener">打开 VJudge 个人资料</a><span class="spacer"></span><button class="danger" data-a="vjLogout" ${vjBusy?'disabled':''}>解除绑定</button></div>`;
+  }else{
+    content=`<p class="dim" style="margin:0">不需要把密码交给本游戏。验证码会临时写入你的 VJudge 个人资料，用于确认账号归属。</p>
+      <div class="field"><label class="dim" for="vjName">VJudge 用户名</label><input id="vjName" maxlength="40" value="${esc(vjUsernameInput)}" placeholder="你的 VJudge 用户名"></div>
+      <div class="row"><button class="primary" data-a="vjChallenge" ${vjBusy?'disabled':''}>${vjBusy?'处理中…':'生成验证码'}</button></div>
+      ${vjChallengeCode?`<div class="msg"><b>验证码：<span class="mono">${esc(vjChallengeCode)}</span></b><br>请在 10 分钟内将验证码追加到 VJudge 个人资料现有的“学校”字段（不要覆盖原内容），然后回来验证；绑定成功后可移除验证码。</div>
+        <div class="row"><a href="https://vjudge.net/user/${encodeURIComponent(vjUsernameInput)}" target="_blank" rel="noopener">打开 ${esc(vjUsernameInput)} 的 VJudge 资料</a><button class="primary" data-a="vjVerify" ${vjBusy?'disabled':''}>我已填写，验证绑定</button></div>`:''}
+      ${vjMessage?`<p class="dim" style="margin:0">${esc(vjMessage)}</p>`:''}`;
+  }
+  return `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="vjTitle">
+    <div class="row"><h2 id="vjTitle">VJudge 账号验证</h2><span class="spacer"></span><button data-a="vjClose" aria-label="关闭">关闭</button></div>
+    ${content}
+  </div></div>`;
+}
+async function vjGenerateChallenge(){
+  const field=document.getElementById('vjName');
+  vjUsernameInput=((field&&field.value)||'').trim();vjChallengeCode='';vjMessage='';vjBusy=true;render();
+  try{
+    const data=await vjPost('/api/vjudge/challenge',{username:vjUsernameInput});
+    vjUsernameInput=data.username;vjChallengeCode=data.code;vjMessage='验证码已生成，有效期 10 分钟。';toast('验证码已生成');
+  }catch(e){vjMessage=e.message||'生成验证码失败'}
+  finally{vjBusy=false;render()}
+}
+async function vjVerifyBinding(){
+  vjBusy=true;vjMessage='正在读取 VJudge 个人资料…';render();
+  try{
+    const data=await vjPost('/api/vjudge/verify',{username:vjUsernameInput,code:vjChallengeCode});
+    vjBinding={username:data.username,token:data.token};lsSet(LS_VJ,JSON.stringify(vjBinding));
+    vjChallengeCode='';vjMessage='';if(net.connected)netSend({t:'vbind',token:vjBinding.token});
+    toast('VJudge 账号绑定成功');
+  }catch(e){vjMessage=e.message||'绑定验证失败'}
+  finally{vjBusy=false;render()}
+}
+async function vjUnbind(){
+  if(!vjBinding)return;
+  const token=vjBinding.token;
+  vjBinding=null;lsDel(LS_VJ);vjChallengeCode='';vjMessage='';if(net.connected)netSend({t:'vbind',token:''});
+  vjBusy=true;render();
+  try{await vjPost('/api/vjudge/logout',{token})}
+  catch(e){vjMessage='本地已解除绑定，但服务器注销失败：'+(e.message||'请求失败')}
+  finally{vjBusy=false;render()}
+}
+async function verifySoloAc(){
+  const r=run,rm=r&&r.room,c=rm&&rm.combat;
+  if(!vjBinding||!c)return;
+  if(!c.vjBattleId){toast('本场没有验证记录，请退出后重新进入战斗再开始计时');return}
+  if(c.vjChecking)return;
+  c.vjChecking=true;render();
+  try{
+    const data=await vjPost('/api/vjudge/check',{token:vjBinding.token,battleId:c.vjBattleId});
+    if(run!==r||r.room!==rm)return;
+    c.vjChecking=false;
+    if(data.accepted){toast('VJudge 已确认本场 AC');winCombat()}
+    else toast(data.pending?'VJudge 仍在判题，请稍后重试':'暂未找到本场开始后的 AC 记录');
+  }catch(e){if((e.message||'').includes('绑定已失效'))vjForgetBinding();toast(e.message||'VJudge 查询失败')}
+  finally{if(run===r&&r.room===rm&&c.vjChecking){c.vjChecking=false;render()}}
+}
 async function lgListAdd(){
   const el=document.getElementById('lgListIn'),raw=((el&&el.value)||'').trim();
   const m=raw.match(/training\/(\d+)/)||raw.match(/^(\d+)$/);
@@ -1645,7 +1746,7 @@ function lgListManual(){
   lg.lists.push(l);lg.listOn.push(l.id);lg.useLists=true;lgSave();
   if(ta)ta.value='';toast('已导入 '+ids.length+' 个题号');render();
 }
-function probLink(rm){return `<div class="hint">当前题目：<a href="https://www.luogu.com.cn/problem/${esc(rm.problem.pid)}" target="_blank" rel="noopener">${esc(rm.problem.pid)} ${esc(rm.problem.title||'')}</a></div>`}
+function probLink(rm){return `<div class="hint">当前题目：<a href="https://www.luogu.com.cn/problem/${esc(rm.problem.pid)}" target="_blank" rel="noopener">${esc(rm.problem.pid)} ${esc(rm.problem.title||'')}</a>${vjBinding?` · <a href="https://vjudge.net/problem" target="_blank" rel="noopener">在 VJudge 搜索并提交</a>`:''}</div>`}
 function lgHintHTML(rm,levels){
   const rt=recTags(rm.topic),mp=isMP(),f=fightOf();
   const names=levels.map(v=>LV[v].c+'（'+LV[v].n+'）').join(' / ');
@@ -1665,8 +1766,8 @@ function probListHTML(probs,fight){
   const n=probs.filter(p=>solved[p.pid]).length;
   return `<div class="probs"><div class="dim">已击败 ${n}/${probs.length}</div>`+probs.map(p=>{
     const sv=solved[p.pid];
-    return `<div class="prob ${sv?'ok':''}"><span class="pt"><a href="https://www.luogu.com.cn/problem/${esc(p.pid)}" target="_blank" rel="noopener">${esc(p.pid)} ${esc(p.title||'')}</a> ${p.diff>=1&&LV[p.diff]?lvChip(p.diff):''}</span>
-      <span>${sv?'已被 '+esc(sv.name)+' 击败':(fight?`<button data-a="psolve" data-pid="${esc(p.pid)}">我AC了</button>`:'')}</span></div>`;
+    return `<div class="prob ${sv?'ok':''}"><span class="pt"><a href="https://www.luogu.com.cn/problem/${esc(p.pid)}" target="_blank" rel="noopener">${esc(p.pid)} ${esc(p.title||'')}</a> ${p.diff>=0&&LV[p.diff]?lvChip(p.diff):''}${vjBinding?` · <a href="https://vjudge.net/problem" target="_blank" rel="noopener">VJudge</a>`:''}</span>
+      <span>${sv?'已被 '+esc(sv.name)+' 击败':(fight?`<button data-a="psolve" data-pid="${esc(p.pid)}">${vjBinding?'验证 VJudge AC':'我AC了'}</button>`:'')}</span></div>`;
   }).join('')+`</div>`;
 }
 function manualHTML(need){
@@ -1791,11 +1892,17 @@ $app.addEventListener('click',e=>{
     case 'pickDiff':selDiff=+d.d;render();break;
     case 'pickTier':selDiff=+d.t*11+(selDiff%11);render();break;
     case 'theme':theme=theme==='dark'?'light':'dark';lsSet('oi_theme',theme);applyTheme();render();break;
+    case 'vjPanel':vjPanel=true;vjMessage='';render();break;
+    case 'vjClose':vjPanel=false;render();break;
+    case 'vjChallenge':vjGenerateChallenge();break;
+    case 'vjVerify':vjVerifyBinding();break;
+    case 'vjLogout':vjUnbind();break;
     case 'startSolo':{const s=(document.getElementById('seedIn')||{}).value;startRun(selDiff,(s||'').trim()||null);break}
     case 'continue':try{const r=JSON.parse(lsGet(LS_RUN));if(r&&r.v===5&&!r.mp&&!r.over&&!r.victory&&(!r.test||testMode)){run=r;view='game';lastMapAct=null;render();break}}catch(x){}lsDel(LS_RUN);toast('没有可继续的存档');render();break;
     case 'node':if(isMP())voteNode(+d.r,+d.c);else enterNode(+d.r,+d.c);break;
-    case 'startCombat':if(isMP())netSend({t:'pstart'});else startCombat();break;
+    case 'startCombat':if(run&&run.mp)netSend({t:'pstart'});else startCombat();break;
     case 'ac':winCombat();break;
+    case 'verifySoloAc':verifySoloAc();break;
     case 'ancient':ancientPick(+d.i);break;
     case 'jump':lgJump();break;
     case 'lgPanel':lgPanel=true;lgCountNow().then(n=>{lgCount=n;if(lgPanel)render()}).catch(()=>{});render();break;
@@ -1814,7 +1921,7 @@ $app.addEventListener('click',e=>{
     case 'lgListDel':lg.lists=lg.lists.filter(l=>l.id!==d.id);lg.listOn=lg.listOn.filter(x=>x!==d.id);lgSave();render();break;
     case 'lgListAdd':lgListAdd();break;
     case 'lgListManual':lgListManual();break;
-    case 'psolve':lgMarkDone(d.pid);netSend({t:'psolve',pid:d.pid});break;
+    case 'psolve':netSend({t:'psolve',pid:d.pid,vjToken:vjBinding&&vjBinding.token});break;
     case 'pManual':{
       const el=document.getElementById('mpPids'),f=fightOf(),need=(f&&f.need)||1;
       const ids=[...new Set(((el&&el.value)||'').toUpperCase().match(/[A-Z]+\d+/g)||[])].slice(0,need);

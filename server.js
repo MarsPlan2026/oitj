@@ -20,14 +20,14 @@ const MAX_MSG = 64 * 1024;
 
 /* ---------- 洛谷题单抓取 ---------- */
 const LUOGU_BASE = process.env.LUOGU_BASE || 'https://www.luogu.com.cn';   // 测试时可指向本地假服务器
-function httpGet(urlStr, headers, hops) {
+function httpGet(urlStr, headers, hops, timeoutMs) {
   return new Promise((resolve, reject) => {
     let u; try { u = new URL(urlStr); } catch (e) { return reject(e); }
     const mod = u.protocol === 'http:' ? http : https;
-    const req = mod.get(u, { headers: Object.assign({ 'User-Agent': 'Mozilla/5.0 (OI-Spire-II)', 'Accept': 'application/json,text/html' }, headers || {}), timeout: 12000 }, r => {
+    const req = mod.get(u, { headers: Object.assign({ 'User-Agent': 'Mozilla/5.0 (OI-Spire-II)', 'Accept': 'application/json,text/html' }, headers || {}), timeout: timeoutMs || 12000 }, r => {
       if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location && (hops || 0) < 3) {
         r.resume();
-        return resolve(httpGet(new URL(r.headers.location, u).toString(), headers, (hops || 0) + 1));
+        return resolve(httpGet(new URL(r.headers.location, u).toString(), headers, (hops || 0) + 1, timeoutMs));
       }
       const chunks = []; let n = 0;
       r.on('data', d => { n += d.length; if (n > 4e6) { req.destroy(new Error('响应过大')); } else chunks.push(d); });
@@ -69,12 +69,184 @@ async function fetchTraining(id) {
   return t;
 }
 function sendJson(res, code, obj) {
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+  res.writeHead(code, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Cache-Control': 'no-store'
+  });
   res.end(JSON.stringify(obj));
+}
+
+/* ---------- VJudge 账号与提交验证 ---------- */
+const VJUDGE_BASE = 'https://vjudge.net';
+const VJUDGE_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', Accept: 'application/json,text/html' };
+const vjChallenges = new Map();
+const vjBindings = new Map();
+const vjBattles = new Map();
+const vjChecks = new Map();
+const vjChecksInFlight = new Set();
+const vjVerifyAttempts = new Map();
+let vjActiveChecks = 0;
+function readJsonBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0, tooLarge = false;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > maxBytes) { tooLarge = true; chunks.length = 0; }
+      else if (!tooLarge) chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (tooLarge) return reject(new Error('请求内容过大'));
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
+      catch (e) { reject(new Error('请求 JSON 格式无效')); }
+    });
+    req.on('error', reject);
+  });
+}
+function cleanVjUsername(value) {
+  const username = String(value || '').trim();
+  return /^[A-Za-z0-9_.-]{1,40}$/.test(username) ? username : '';
+}
+function validProblemId(value) {
+  return typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,19}$/.test(value);
+}
+function decodeHtml(value) {
+  return String(value || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'");
+}
+function profileSchool(html) {
+  const marker = 'data-i18n="user.profile.school"';
+  const start = html.indexOf(marker);
+  if (start < 0) return '';
+  const end = html.indexOf('</div>', start);
+  if (end < 0) return '';
+  const field = html.slice(start, end);
+  const match = field.match(/<dd[^>]*>([\s\S]*?)<\/dd>/i);
+  return match ? decodeHtml(match[1].replace(/<[^>]*>/g, '')).trim() : '';
+}
+function getVjBinding(token) {
+  const binding = vjBindings.get(String(token || ''));
+  if (!binding || binding.expiresAt <= Date.now()) {
+    if (binding) vjBindings.delete(String(token || ''));
+    return null;
+  }
+  return binding;
+}
+function checkVjRate(username, pid) {
+  const key = username.toLowerCase() + '|' + pid;
+  const now = Date.now(), previous = vjChecks.get(key) || 0;
+  if (now - previous < 2500) throw Object.assign(new Error('查询太频繁，请稍后再试'), { statusCode: 429 });
+  if (vjChecks.size > 5000) for (const [k, t] of vjChecks) if (now - t > 60000) vjChecks.delete(k);
+  vjChecks.set(key, now);
+}
+async function findVjAccepted(username, pid, startedAt) {
+  if (vjActiveChecks >= 8) throw Object.assign(new Error('VJudge 查询繁忙，请稍后重试'), { statusCode: 503 });
+  vjActiveChecks++;
+  try {
+    checkVjRate(username, pid);
+    let pending = false;
+    for (let page = 0; page < 5; page++) {
+      const url = new URL(VJUDGE_BASE + '/status/data');
+      url.searchParams.set('start', String(page * 100));
+      url.searchParams.set('length', '100');
+      url.searchParams.set('OJId', '洛谷');
+      url.searchParams.set('probNum', pid);
+      const response = await httpGet(url.toString(), Object.assign({}, VJUDGE_HEADERS, { Accept: 'application/json' }), 0, 8000);
+      if (response.status < 200 || response.status >= 300) throw new Error('VJudge 提交查询失败（HTTP ' + response.status + '）');
+      let payload;
+      try { payload = JSON.parse(response.text); } catch (e) { throw new Error('无法解析 VJudge 提交记录'); }
+      if (!payload || !Array.isArray(payload.data)) throw new Error('VJudge 返回了无效的提交数据');
+      let olderThanBattle = false;
+      for (const row of payload.data) {
+        if (!row || String(row.userName || '').toLowerCase() !== username.toLowerCase() ||
+            row.oj !== '洛谷' || row.probNum !== pid) continue;
+        const time = Number(row.time);
+        if (!Number.isFinite(time)) continue;
+        if (time < startedAt) { olderThanBattle = true; continue; }
+        if (row.status === 'Accepted') return { accepted: true, runId: String(row.runId || ''), time };
+        if (/^(?:Judging|Pending|Running)/i.test(String(row.status || ''))) pending = true;
+      }
+      if (olderThanBattle || payload.data.length < 100) break;
+    }
+    return { accepted: false, pending };
+  } finally {
+    vjActiveChecks--;
+  }
+}
+function handleVjApi(req, res, route) {
+  if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' }); return res.end(); }
+  if (req.method !== 'POST') return sendJson(res, 405, { error: '只支持 POST 请求' });
+  readJsonBody(req, 4096).then(async body => {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return sendJson(res, 400, { error: '请求内容必须是 JSON 对象' });
+    if (route === '/api/vjudge/challenge') {
+      const username = cleanVjUsername(body.username);
+      if (!username) return sendJson(res, 400, { error: '请输入有效的 VJudge 用户名' });
+      const now = Date.now();
+      for (const [key, expiresAt] of vjChallenges) if (expiresAt <= now) vjChallenges.delete(key);
+      for (const [token, binding] of vjBindings) if (binding.expiresAt <= now) vjBindings.delete(token);
+      if (vjChallenges.size >= 1000) return sendJson(res, 503, { error: '当前验证请求较多，请稍后再试' });
+      if (vjBindings.size >= 10000) return sendJson(res, 503, { error: '当前绑定账号较多，请稍后再试' });
+      const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+      const key = username.toLowerCase() + '|' + code;
+      vjChallenges.set(key, Date.now() + 10 * 60 * 1000);
+      return sendJson(res, 200, { username, code, expiresIn: 600 });
+    }
+    if (route === '/api/vjudge/verify') {
+      const username = cleanVjUsername(body.username), code = String(body.code || '').trim().toUpperCase();
+      if (!username || !/^[A-F0-9]{8}$/.test(code)) return sendJson(res, 400, { error: '用户名或验证码格式无效' });
+      const attemptsKey = username.toLowerCase(), now = Date.now(), attempts = vjVerifyAttempts.get(attemptsKey) || { since: now, count: 0 };
+      if (vjVerifyAttempts.size > 5000) for (const [key, value] of vjVerifyAttempts) if (now - value.since >= 60000) vjVerifyAttempts.delete(key);
+      if (now - attempts.since >= 60000) { attempts.since = now; attempts.count = 0; }
+      if (attempts.count >= 5) return sendJson(res, 429, { error: '验证尝试次数过多，请一分钟后再试' });
+      attempts.count++; vjVerifyAttempts.set(attemptsKey, attempts);
+      const key = username.toLowerCase() + '|' + code;
+      const expiresAt = vjChallenges.get(key);
+      if (!expiresAt || expiresAt <= Date.now()) return sendJson(res, 400, { error: '验证码已过期或不存在，请重新生成' });
+      const profile = await httpGet(VJUDGE_BASE + '/user/' + encodeURIComponent(username), Object.assign({}, VJUDGE_HEADERS, { Accept: 'text/html' }));
+      if (profile.status < 200 || profile.status >= 300) return sendJson(res, 502, { error: '无法读取 VJudge 用户资料（HTTP ' + profile.status + '）' });
+      if (!profileSchool(profile.text).includes(code)) return sendJson(res, 403, { error: '尚未在 VJudge 个人资料的“学校”字段中找到验证码' });
+      vjChallenges.delete(key);
+      const token = crypto.randomBytes(32).toString('hex');
+      vjBindings.set(token, { username, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+      vjVerifyAttempts.delete(attemptsKey);
+      return sendJson(res, 200, { username, token });
+    }
+    if (route === '/api/vjudge/logout') {
+      vjBindings.delete(String(body.token || ''));
+      return sendJson(res, 200, { ok: true });
+    }
+    if (route === '/api/vjudge/start') {
+      const binding = getVjBinding(body.token);
+      if (!binding) return sendJson(res, 401, { error: 'VJudge 绑定已失效，请重新绑定' });
+      if (!validProblemId(body.pid)) return sendJson(res, 400, { error: '题号无效' });
+      const battleId = crypto.randomBytes(24).toString('hex');
+      const startedAt = Date.now();
+      for (const [id, battle] of vjBattles) if (battle.expiresAt <= startedAt) vjBattles.delete(id);
+      if (vjBattles.size >= 5000) return sendJson(res, 503, { error: '当前验证任务较多，请稍后再试' });
+      vjBattles.set(battleId, { token: String(body.token), username: binding.username, pid: body.pid, startedAt, expiresAt: startedAt + 6 * 60 * 60 * 1000 });
+      return sendJson(res, 200, { battleId, startedAt });
+    }
+    if (route === '/api/vjudge/check') {
+      const binding = getVjBinding(body.token), battle = vjBattles.get(String(body.battleId || ''));
+      if (!binding) return sendJson(res, 401, { error: 'VJudge 绑定已失效，请重新绑定' });
+      if (!battle || battle.expiresAt <= Date.now() || battle.token !== String(body.token) || battle.username !== binding.username) {
+        return sendJson(res, 400, { error: '本场验证已失效，请重新开始战斗' });
+      }
+      const result = await findVjAccepted(binding.username, battle.pid, battle.startedAt);
+      return sendJson(res, 200, { ...result, pid: battle.pid });
+    }
+    return sendJson(res, 404, { error: '未知的 VJudge 接口' });
+  }).catch(error => {
+    const status = error.statusCode || (error.message === '请求内容过大' ? 413 : error.message === '请求 JSON 格式无效' ? 400 : 502);
+    if (!res.headersSent) sendJson(res, status, { error: error.message || 'VJudge 服务暂时不可用' });
+  });
 }
 
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
+  if (url.indexOf('/api/vjudge/') === 0) return handleVjApi(req, res, url);
   if (url === '/api/training') {
     const id = new URL(req.url, 'http://x').searchParams.get('id') || '';
     if (!/^\d{1,9}$/.test(id)) return sendJson(res, 400, { error: '题单编号必须是数字' });
@@ -125,7 +297,7 @@ function ensureHost(room) {
 
 /* ---------- 全队进度（投票 / 房间） ---------- */
 function mkFight(g) {
-  return { need: Math.max(1, Math.floor(g.players.size * 2 / 3)), problems: null, solved: {}, started: false, won: false };
+  return { need: Math.max(1, Math.floor(g.players.size * 2 / 3)), problems: null, solved: {}, started: false, startedAt: null, won: false };
 }
 function newGame(room) {
   const g = { phase: 'room', step: 0, votes: {}, done: {}, players: new Set([...room.members.values()].filter(m => m.online).map(m => m.id)), over: false, go: null };
@@ -224,8 +396,11 @@ function handle(conn, msg) {
       room.members.set(id, m);
     }
     m.name = name; m.conn = conn; m.online = true; m.away = false; m.room = room; conn.member = m;
+    const binding = getVjBinding(msg.vjToken);
+    m.vjToken = binding ? String(msg.vjToken) : null;
+    m.vjUsername = binding ? binding.username : null;
     ensureHost(room);
-    send(m, { t: 'joined', you: m.id, room: code, host: room.host, started: room.started, config: room.config, g: gState(room), members: memberList(room), resumed, player: !!(room.game && room.game.players.has(m.id)) });
+    send(m, { t: 'joined', you: m.id, room: code, host: room.host, started: room.started, config: room.config, g: gState(room), members: memberList(room), resumed, player: !!(room.game && room.game.players.has(m.id)), vjBound: !!m.vjUsername });
     const g0 = room.game;
     if (g0 && !g0.over && g0.players.has(m.id) && g0.phase === 'room' && g0.go && !g0.done[m.id]) send(m, { t: 'go', r: g0.go.r, c: g0.go.c, step: g0.go.step, again: true });
     pushMembers(room);
@@ -238,6 +413,13 @@ function handle(conn, msg) {
 
   if (t === 'bye') { removeMember(c); try { conn.sock.destroy(); } catch (e) {} return; }
   if (t === 'away') { c.away = true; return; }
+  if (t === 'vbind') {
+    if (!m.token) { c.vjToken = null; c.vjUsername = null; return; }
+    const binding = getVjBinding(m.token);
+    if (!binding) return send(c, { t: 'error', msg: 'VJudge 绑定已失效，请重新绑定' });
+    c.vjToken = String(m.token); c.vjUsername = binding.username;
+    return;
+  }
   if (t === 'status') {
     c.status = m.s && typeof m.s === 'object' ? m.s : null;
     broadcast(room, { t: 'status', id: c.id, s: c.status }, c);
@@ -290,12 +472,36 @@ function handle(conn, msg) {
   } else if (t === 'pstart') {
     if (!g || g.over || g.phase !== 'room' || !g.players.has(c.id)) return;
     const f = g.fight; if (!f.problems || f.started) return;
-    f.started = true; pushG(room);
+    f.started = true; f.startedAt = Date.now(); pushG(room);
   } else if (t === 'psolve') {
     if (!g || g.over || g.phase !== 'room' || !g.players.has(c.id)) return;
     const f = g.fight; if (!f.started || f.won || !f.problems) return;
     const pid = String(m.pid || '');
     if (!f.problems.some(p => p.pid === pid) || f.solved[pid]) return;
+    let binding = m.vjToken ? getVjBinding(m.vjToken) : null;
+    if (m.vjToken && !binding) return send(c, { t: 'error', msg: 'VJudge 绑定已失效，请重新绑定后再验证' });
+    if (!binding && c.vjToken) binding = getVjBinding(c.vjToken);
+    if (!binding && c.vjUsername) return send(c, { t: 'error', msg: 'VJudge 绑定已失效，请重新绑定后再验证' });
+    if (binding) {
+      c.vjToken = m.vjToken ? String(m.vjToken) : c.vjToken;
+      c.vjUsername = binding.username;
+      if (!f.startedAt) return send(c, { t: 'error', msg: '服务器没有本场开始时间，请重新开始战斗' });
+      const checkKey = room.code + '|' + pid + '|' + binding.username.toLowerCase();
+      if (vjChecksInFlight.has(checkKey)) return send(c, { t: 'error', msg: '这道题正在验证，请稍后查看同步结果' });
+      vjChecksInFlight.add(checkKey);
+      findVjAccepted(binding.username, pid, f.startedAt).then(result => {
+        vjChecksInFlight.delete(checkKey);
+        if (room.game !== g || g.fight !== f || f.won || f.solved[pid]) return;
+        if (!result.accepted) return send(c, { t: 'error', msg: result.pending ? 'VJudge 仍在判题，请稍后重试' : '未找到本场开始后的 VJudge AC 记录' });
+        f.solved[pid] = { id: c.id, name: c.name, verified: true };
+        if (f.problems.every(p => f.solved[p.pid])) f.won = true;
+        pushG(room);
+      }).catch(error => {
+        vjChecksInFlight.delete(checkKey);
+        send(c, { t: 'error', msg: error.message || 'VJudge 查询失败，请稍后重试' });
+      });
+      return;
+    }
     f.solved[pid] = { id: c.id, name: c.name };
     if (f.problems.every(p => f.solved[p.pid])) f.won = true;
     pushG(room);
