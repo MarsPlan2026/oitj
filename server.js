@@ -81,6 +81,7 @@ function sendJson(res, code, obj) {
 
 /* ---------- VJudge 账号与提交验证 ---------- */
 const VJUDGE_BASE = 'https://vjudge.net';
+const VJUDGE_BIND_PROBLEMS = ['P1000', 'P1001', 'P1421', 'P1425', 'P1909', 'P1980', 'P1055', 'P1085'];
 const VJUDGE_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', Accept: 'application/json,text/html' };
 const vjChallenges = new Map();
 const vjBindings = new Map();
@@ -112,20 +113,6 @@ function cleanVjUsername(value) {
 function validProblemId(value) {
   return typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,19}$/.test(value);
 }
-function decodeHtml(value) {
-  return String(value || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'");
-}
-function profileSchool(html) {
-  const marker = 'data-i18n="user.profile.school"';
-  const start = html.indexOf(marker);
-  if (start < 0) return '';
-  const end = html.indexOf('</div>', start);
-  if (end < 0) return '';
-  const field = html.slice(start, end);
-  const match = field.match(/<dd[^>]*>([\s\S]*?)<\/dd>/i);
-  return match ? decodeHtml(match[1].replace(/<[^>]*>/g, '')).trim() : '';
-}
 function getVjBinding(token) {
   const binding = vjBindings.get(String(token || ''));
   if (!binding || binding.expiresAt <= Date.now()) {
@@ -141,7 +128,7 @@ function checkVjRate(username, pid) {
   if (vjChecks.size > 5000) for (const [k, t] of vjChecks) if (now - t > 60000) vjChecks.delete(k);
   vjChecks.set(key, now);
 }
-async function findVjAccepted(username, pid, startedAt) {
+async function findVjRecord(username, pid, startedAt, requireAccepted) {
   if (vjActiveChecks >= 8) throw Object.assign(new Error('VJudge 查询繁忙，请稍后重试'), { statusCode: 503 });
   vjActiveChecks++;
   try {
@@ -165,12 +152,13 @@ async function findVjAccepted(username, pid, startedAt) {
         const time = Number(row.time);
         if (!Number.isFinite(time)) continue;
         if (time < startedAt) { olderThanBattle = true; continue; }
-        if (row.status === 'Accepted') return { accepted: true, runId: String(row.runId || ''), time };
+        if (row.status === 'Accepted') return { found: true, accepted: true, runId: String(row.runId || ''), time };
+        if (!requireAccepted) return { found: true, accepted: false, status: String(row.status || ''), runId: String(row.runId || ''), time };
         if (/^(?:Judging|Pending|Running)/i.test(String(row.status || ''))) pending = true;
       }
       if (olderThanBattle || payload.data.length < 100) break;
     }
-    return { accepted: false, pending };
+    return { found: false, accepted: false, pending };
   } finally {
     vjActiveChecks--;
   }
@@ -184,29 +172,29 @@ function handleVjApi(req, res, route) {
       const username = cleanVjUsername(body.username);
       if (!username) return sendJson(res, 400, { error: '请输入有效的 VJudge 用户名' });
       const now = Date.now();
-      for (const [key, expiresAt] of vjChallenges) if (expiresAt <= now) vjChallenges.delete(key);
+      for (const [key, challenge] of vjChallenges) if (challenge.expiresAt <= now) vjChallenges.delete(key);
       for (const [token, binding] of vjBindings) if (binding.expiresAt <= now) vjBindings.delete(token);
       if (vjChallenges.size >= 1000) return sendJson(res, 503, { error: '当前验证请求较多，请稍后再试' });
       if (vjBindings.size >= 10000) return sendJson(res, 503, { error: '当前绑定账号较多，请稍后再试' });
       const code = crypto.randomBytes(4).toString('hex').toUpperCase();
       const key = username.toLowerCase() + '|' + code;
-      vjChallenges.set(key, Date.now() + 10 * 60 * 1000);
-      return sendJson(res, 200, { username, code, expiresIn: 600 });
+      const problemId = VJUDGE_BIND_PROBLEMS[crypto.randomBytes(1)[0] % VJUDGE_BIND_PROBLEMS.length];
+      vjChallenges.set(key, { problemId, createdAt: now, expiresAt: now + 10 * 60 * 1000 });
+      return sendJson(res, 200, { username, challengeId: code, problemId, expiresIn: 600 });
     }
     if (route === '/api/vjudge/verify') {
-      const username = cleanVjUsername(body.username), code = String(body.code || '').trim().toUpperCase();
-      if (!username || !/^[A-F0-9]{8}$/.test(code)) return sendJson(res, 400, { error: '用户名或验证码格式无效' });
+      const username = cleanVjUsername(body.username), code = String(body.challengeId || '').trim().toUpperCase();
+      if (!username || !/^[A-F0-9]{8}$/.test(code)) return sendJson(res, 400, { error: '用户名或验证编号无效' });
       const attemptsKey = username.toLowerCase(), now = Date.now(), attempts = vjVerifyAttempts.get(attemptsKey) || { since: now, count: 0 };
       if (vjVerifyAttempts.size > 5000) for (const [key, value] of vjVerifyAttempts) if (now - value.since >= 60000) vjVerifyAttempts.delete(key);
       if (now - attempts.since >= 60000) { attempts.since = now; attempts.count = 0; }
       if (attempts.count >= 5) return sendJson(res, 429, { error: '验证尝试次数过多，请一分钟后再试' });
       attempts.count++; vjVerifyAttempts.set(attemptsKey, attempts);
       const key = username.toLowerCase() + '|' + code;
-      const expiresAt = vjChallenges.get(key);
-      if (!expiresAt || expiresAt <= Date.now()) return sendJson(res, 400, { error: '验证码已过期或不存在，请重新生成' });
-      const profile = await httpGet(VJUDGE_BASE + '/user/' + encodeURIComponent(username), Object.assign({}, VJUDGE_HEADERS, { Accept: 'text/html' }));
-      if (profile.status < 200 || profile.status >= 300) return sendJson(res, 502, { error: '无法读取 VJudge 用户资料（HTTP ' + profile.status + '）' });
-      if (!profileSchool(profile.text).includes(code)) return sendJson(res, 403, { error: '尚未在 VJudge 个人资料的“学校”字段中找到验证码' });
+      const challenge = vjChallenges.get(key);
+      if (!challenge || challenge.expiresAt <= Date.now()) return sendJson(res, 400, { error: '验证已过期或不存在，请重新生成' });
+      const submission = await findVjRecord(username, challenge.problemId, challenge.createdAt, false);
+      if (!submission.found) return sendJson(res, 409, { error: '尚未找到这道验证题的新提交。请通过 VJudge 提交一次代码（不必 AC），再重试' });
       vjChallenges.delete(key);
       const token = crypto.randomBytes(32).toString('hex');
       vjBindings.set(token, { username, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
@@ -234,7 +222,7 @@ function handleVjApi(req, res, route) {
       if (!battle || battle.expiresAt <= Date.now() || battle.token !== String(body.token) || battle.username !== binding.username) {
         return sendJson(res, 400, { error: '本场验证已失效，请重新开始战斗' });
       }
-      const result = await findVjAccepted(binding.username, battle.pid, battle.startedAt);
+      const result = await findVjRecord(binding.username, battle.pid, battle.startedAt, true);
       return sendJson(res, 200, { ...result, pid: battle.pid });
     }
     return sendJson(res, 404, { error: '未知的 VJudge 接口' });
@@ -489,7 +477,7 @@ function handle(conn, msg) {
       const checkKey = room.code + '|' + pid + '|' + binding.username.toLowerCase();
       if (vjChecksInFlight.has(checkKey)) return send(c, { t: 'error', msg: '这道题正在验证，请稍后查看同步结果' });
       vjChecksInFlight.add(checkKey);
-      findVjAccepted(binding.username, pid, f.startedAt).then(result => {
+      findVjRecord(binding.username, pid, f.startedAt, true).then(result => {
         vjChecksInFlight.delete(checkKey);
         if (room.game !== g || g.fight !== f || f.won || f.solved[pid]) return;
         if (!result.accepted) return send(c, { t: 'error', msg: result.pending ? 'VJudge 仍在判题，请稍后重试' : '未找到本场开始后的 VJudge AC 记录' });
