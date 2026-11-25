@@ -266,14 +266,14 @@ function frame(op, payload) {
    连接断开后，成员先标记为离线并保留席位；在宽限期内用同一编号（或同名的离线席位）重连，即可无缝接回对局。
    宽限期结束仍未回来的成员才会被真正移出房间，因此不会长期占着位置，也不会因为一次抖动就被踢出。 */
 const GRACE_LOBBY = +process.env.GRACE_LOBBY || 10000;     // 大厅里掉线：10 秒
-const GRACE_GAME = +process.env.GRACE_GAME || 45000;       // 对局中掉线：45 秒
-const GRACE_AWAY = +process.env.GRACE_AWAY || 12000;       // 页面主动关闭（pagehide）：12 秒，足够刷新后重连
+const GRACE_GAME = +process.env.GRACE_GAME || 120000;      // 对局中掉线：2 分钟
+const GRACE_AWAY = +process.env.GRACE_AWAY || 90000;       // 刷新或关闭页面后保留 90 秒供重连
 const PING_MS = +process.env.PING_MS || 20000;             // 心跳间隔；连续两个周期没有任何回应则判定为死连接
 const rooms = new Map();
 let nextId = 1;
 
 function send(m, obj) { const c = m.conn; if (c && !c.closed) { try { c.sock.write(frame(1, JSON.stringify(obj))); } catch (e) {} } }
-function memberList(room) { return [...room.members.values()].map(m => ({ id: m.id, name: m.name, s: m.status, o: m.online })); }
+function memberList(room) { return [...room.members.values()].map(m => ({ id: m.id, name: m.name, s: m.status, o: m.online, until: m.offlineUntil || null })); }
 function broadcast(room, obj, except) { for (const m of room.members.values()) if (m !== except) send(m, obj); }
 function pushMembers(room) { broadcast(room, { t: 'members', host: room.host, members: memberList(room) }); }
 function ensureHost(room) {
@@ -351,6 +351,7 @@ function detach(conn) {
   const room = m.room; if (!room) return;
   const inGame = room.game && !room.game.over && room.game.players.has(m.id);
   const wait = m.away ? GRACE_AWAY : inGame ? GRACE_GAME : GRACE_LOBBY;
+  m.offlineUntil = Date.now() + wait;
   clearTimeout(m.timer);
   m.timer = setTimeout(() => removeMember(m), wait);
   ensureHost(room);
@@ -380,10 +381,10 @@ function handle(conn, msg) {
     } else {
       if (room.members.size >= 12) { try { conn.sock.write(frame(1, JSON.stringify({ t: 'error', msg: '房间已满（最多 12 人）' }))); } catch (e) {} return; }
       let id = CID_OK(msg.cid) && !room.members.has(msg.cid) ? msg.cid : 'p' + nextId++ + Math.random().toString(36).slice(2, 6);
-      m = { id, name, room, conn: null, status: null, online: false, timer: null, away: false };
+      m = { id, name, room, conn: null, status: null, online: false, timer: null, away: false, offlineUntil: null };
       room.members.set(id, m);
     }
-    m.name = name; m.conn = conn; m.online = true; m.away = false; m.room = room; conn.member = m;
+    m.name = name; m.conn = conn; m.online = true; m.away = false; m.offlineUntil = null; m.room = room; conn.member = m;
     const binding = getVjBinding(msg.vjToken);
     m.vjToken = binding ? String(msg.vjToken) : null;
     m.vjUsername = binding ? binding.username : null;

@@ -456,7 +456,9 @@ const $app=document.getElementById('app');
 let view='menu', run=null, selDiff=0, toastTimer=null, endSeen=false;
 let drawMode=false, penColor='#ff5252', curStroke=null, lgPanel=false, vjPanel=false;
 let vjBinding=null,vjUsernameInput='',vjChallengeId='',vjProblemId='',vjMessage='',vjBusy=false;
-const LS_PROG='oi3_progress', LS_RUN='oi3_run', LS_NAME='oi2_name', LS_MPRUN='oi3_mprun', LS_VJ='oi3_vjudge';
+const LS_PROG='oi3_progress', LS_RUN='oi3_run', LS_NAME='oi2_name', LS_MPRUN='oi3_mprun', LS_VJ='oi3_vjudge',
+  LS_HISTORY='oi3_history', LS_STATS_CONSENT='oi3_stats_consent', LS_ONBOARD='oi3_onboard';
+let telemetryMsg='',onboardingOpen=lsGet(LS_ONBOARD)!=='1';
 function lsGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function lsSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
 function lsDel(k){try{localStorage.removeItem(k)}catch(e){}}
@@ -484,7 +486,49 @@ const testPwOk=p=>hashStr('oi-spire-test|'+p)===TPW[0]&&hashStr('尖塔|'+p+'|II
 const isUnlocked=gi=>testMode||(gi%11)<=prog.unl[Math.floor(gi/11)];
 const unlockedList=()=>{const a=[];for(let g=0;g<=GI_MAX;g++)if(isUnlocked(g))a.push(g);return a};
 function saveProg(){lsSet(LS_PROG,JSON.stringify(prog))}
-function save(){if(run&&!run.mp){lsSet(LS_RUN,JSON.stringify(run))}else if(run&&run.mp)mpSave();syncStatus()}
+function save(){
+  if(run&&(run.over||run.victory))finishRun();
+  if(run&&!run.mp&&!run.over&&!run.victory)lsSet(LS_RUN,JSON.stringify(run));
+  else if(run&&!run.mp)lsDel(LS_RUN);
+  else if(run&&run.mp)mpSave();
+  syncStatus()
+}
+function runModeName(mode){
+  return ({practice:'no-timer practice',list:'fixed-list challenge',team_race:'team race',custom:'custom'})[mode]||'standard';
+}
+function historyRuns(){try{const h=JSON.parse(lsGet(LS_HISTORY));return Array.isArray(h)?h:[]}catch(e){return[]}}
+function finishRun(){
+  if(!run||run.historySaved)return;
+  run.historySaved=true;
+  const duration=Math.max(0,Math.floor((Date.now()-(run.stats.startedAt||Date.now()))/1000));
+  const row={seed:String(run.seed),gi:run.gi,tier:run.tier||0,difficulty:run.difficulty,mode:run.mode||'standard',
+    result:run.victory?'win':'loss',act:run.act||1,floor:run.pos?run.pos.r+1:0,duration,
+    wins:run.stats.wins||0,drain:run.stats.drain||0,at:Date.now()};
+  const history=historyRuns();history.unshift(row);lsSet(LS_HISTORY,JSON.stringify(history.slice(0,20)));
+  lsDel(LS_RUN);lsDel(LS_MPRUN);
+  if(lsGet(LS_STATS_CONSENT)==='1')submitDifficultyStats(row);
+}
+async function submitDifficultyStats(row){
+  telemetryMsg='Submitting opted-in anonymous difficulty stats…';render();
+  try{
+    const res=await fetch(apiBase()+'/api/stats',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tier:row.tier,difficulty:row.difficulty,result:row.result,act:row.act,floor:row.floor,
+        duration:row.duration,wins:row.wins,drain:row.drain,mode:row.mode})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(data.error||('HTTP '+res.status));
+    telemetryMsg='Anonymous difficulty stats uploaded with your consent.';
+  }catch(e){telemetryMsg='Anonymous stats were not saved: '+(e.message||'server unavailable')+'. You can retry by completing another run.'}
+  if(view==='menu')render();
+}
+function shareSeed(seed){
+  const text=String(seed||'');
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text).then(()=>toast('Seed copied')).catch(()=>copySeedFallback(text));
+  else copySeedFallback(text);
+}
+function copySeedFallback(text){
+  const el=document.createElement('textarea');el.value=text;el.setAttribute('readonly','');el.style.position='fixed';el.style.opacity='0';
+  document.body.appendChild(el);el.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}el.remove();toast(ok?'Seed copied':'Could not access clipboard; seed: '+text);
+}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function toast(m){
   const old=document.querySelector('.toast');if(old)old.remove();
@@ -501,9 +545,10 @@ const nodeKey=n=>run.act+'_'+n.r+'_'+n.c;
 /* =====================================================================
    三、爬塔流程
    ===================================================================== */
-function newRun(gi,seed,custom){
+function newRun(gi,seed,custom,mode,problemList){
   const tier=Math.floor(gi/11),diff=gi%11,pr=Object.assign(P(diff),custom?custom.pr:{});
-  return {v:5,seed:String(seed),gi,tier,difficulty:diff,act:1,hp:pr.startMax,maxHp:pr.startMax,gold:custom?custom.gold:99,custom:custom||null,
+  return {v:5,seed:String(seed),gi,tier,difficulty:diff,mode:mode||(custom?'custom':'standard'),problemList:problemList||null,problemCursor:0,
+    act:1,hp:pr.startMax,maxHp:pr.startMax,gold:custom?custom.gold:99,custom:custom||null,
     relics:pr.noStarter?[]:['starter'],potions:['coffee'],nextFightMs:0,fightBoon:0,fightBonusMin:0,
     extraSlots:0,actCut:0,actShopDisc:0,actTick:0,actHint:0,shieldLeft:0,freeFights:0,mp:false,deadSent:false,pending:[],test:testMode,reviveUsed:false,
     pos:null,visited:{},room:null,map:null,over:false,victory:false,
@@ -517,12 +562,13 @@ function startAct(){
   if(E('actCoffee'))givePotion('coffee');
   if(E('actPotion'))givePotion(randPotion(Math.random));
   if(run.act>1&&E('actHeal'))heal(E('actHeal'));
-  if(!run.test&&!run.custom){prog.best[run.gi]=Math.max(prog.best[run.gi]||0,run.act);saveProg()}
+  if(!run.test&&!run.custom&&run.mode!=='practice'&&run.mode!=='list'){prog.best[run.gi]=Math.max(prog.best[run.gi]||0,run.act);saveProg()}
   lastMapAct=null;
 }
-function startRun(gi,seed,mp,custom){
+function startRun(gi,seed,mp,custom,mode,problemList){
   if(!custom&&!isUnlocked(gi)){toast('该进阶尚未解锁');return}
-  run=newRun(gi,seed||Math.random().toString(36).slice(2,8),custom);
+  if(mode==='list'&&(!Array.isArray(problemList)||!problemList.length)){toast('Choose a non-empty fixed problem list first');return}
+  run=newRun(gi,seed||Math.random().toString(36).slice(2,8),custom,mode,problemList);
   run.mp=!!mp;curStroke=null;drawMode=false;
   startAct();save();view='game';render();
 }
@@ -562,6 +608,8 @@ function makeRoom(type,pos,rr,evId){
     run.nextFightMs=0;
     run.room.combat={graceMs:(graceOf(type)+bonus)*60000,baseMin:graceOf(type),bonusMin:bonus,extraMs:0,started:false,done:false,
       insured:false,partial:false,lucky:false,shielded:false,guard:0,ticks:0,lost:0};
+    if(run.mode==='list'&&Array.isArray(run.problemList)&&run.problemList.length)
+      run.room.problem=run.problemList[run.problemCursor%run.problemList.length];
   }else if(type==='shop'){run.room.shop=genShop(rr)}
   else if(type==='treasure'){run.room.phase='open'}
   else if(type==='rest'){run.room.phase='choose'}
@@ -593,7 +641,7 @@ function leaveRoom(){
       toast('第二位首领 出现了，没有喘息的机会。');
     }else{
       run.victory=true;next='finish';
-      if(!run.test&&!run.custom){prog.cleared[run.gi]=true;const t=run.tier||0;if(run.difficulty<10)prog.unl[t]=Math.max(prog.unl[t],run.difficulty+1);saveProg()}
+      if(!run.test&&!run.custom&&run.mode!=='practice'&&run.mode!=='list'){prog.cleared[run.gi]=true;const t=run.tier||0;if(run.difficulty<10)prog.unl[t]=Math.max(prog.unl[t],run.difficulty+1);saveProg()}
     }
   }
   save();render();
@@ -643,7 +691,7 @@ function drainDmg(c,kind){
 async function startCombat(){
   const r=run,rm=r&&r.room,c=rm&&rm.combat;
   if(!c||c.started||c.vjStarting)return;
-  if(!r.mp&&vjBinding){
+  if(!isMP()&&vjBinding){
     if(!rm.problem){toast('请先选定题目，再开始 VJudge 验证计时');return}
     c.vjStarting=true;render();
     try{
@@ -664,6 +712,7 @@ async function startCombat(){
   run.room.phase='fight';save();render();
 }
 function applyOvertime(){
+  if(run.mode==='practice')return;
   const rm=run.room,c=rm.combat,tk=tickMs();
   const over=Date.now()-c.startAt-(c.graceMs+c.extraMs);
   const target=over>0?Math.floor(over/tk):0;
@@ -685,6 +734,7 @@ function applyOvertime(){
 function winCombat(){
   const rm=run.room,c=rm.combat,pr=PR();
   c.done=true;rm.phase='won';run.stats.wins++;
+  if(run.mode==='list')run.problemCursor++;
   if(rm.problem)lgMarkDone(rm.problem.pid);
   if(rm.kind==='elite')run.stats.elites++;
   const rr=rngFor(run.seed,'rw'+nodeKey(rm.node));
@@ -1036,7 +1086,7 @@ function netLeave(){
 }
 function setMembers(list){
   const old=net.members;net.members={};
-  list.forEach(m=>{net.members[m.id]={name:m.name,o:m.o!==false,s:m.s||(old[m.id]&&old[m.id].s)||null,at:Date.now()}});
+  list.forEach(m=>{net.members[m.id]={name:m.name,o:m.o!==false,s:m.s||(old[m.id]&&old[m.id].s)||null,until:m.until||null,at:Date.now()}});
 }
 function onNet(m){
   if(m.t==='joined'){
@@ -1814,7 +1864,8 @@ function sideInner(){
     const m=net.members[id],s=m.s,me=id===net.id;
     const prog_=s&&s.act?`${TIERS[s.tier||0].n} A${s.d} · 第${s.act}幕 · ${s.floor}/${ROWS}层`:'未开局';
     const rem=s&&s.rem!=null?(s.rem>0?` · <span class="mono" data-end="${m.at+s.rem}">${fmtTime(s.rem)}</span>`:' · <span style="color:var(--bad)">超时</span>'):'';
-    return `<div class="pl ${me?'me':''}"><div class="top"><b><span class="dot" style="background:${memberColor(id)}"></span>${esc(m.name)}${id===net.host?' <span class="dim">房主</span>':''}${m.o===false?' <span class="dim">（离线）</span>':''}${me?' <span class="dim">我</span>':''}</b><span class="dim">${s?esc(s.st):''}${rem}${gmark(id)}</span></div>
+    const offline=m.o===false?` <span class="dim">（重连中${m.until?`，剩余 <span class="mono" data-end="${m.until}"></span>`:''}）</span>`:'';
+    return `<div class="pl ${me?'me':''}"><div class="top"><b><span class="dot" style="background:${memberColor(id)}"></span>${esc(m.name)}${id===net.host?' <span class="dim">房主</span>':''}${offline}${me?' <span class="dim">我</span>':''}</b><span class="dim">${s?esc(s.st):''}${rem}${gmark(id)}</span></div>
       <div class="top"><span>${prog_}</span>${s&&s.max?`<span class="mono">${s.hp}/${s.max}</span>`:''}</div>
       ${s&&s.max?`<div class="bar"><i style="width:${Math.max(0,s.hp/s.max*100)}%;background:var(--bad)"></i></div>`:''}
       ${!me&&run&&run.potions.length&&!run.over?`<div class="row"><select id="gift_${id}">${mypots}</select><button data-a="gift" data-to="${id}">赠药</button></div>`:''}</div>`;
