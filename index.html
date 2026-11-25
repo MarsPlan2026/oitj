@@ -459,6 +459,7 @@ let vjBinding=null,vjUsernameInput='',vjChallengeId='',vjProblemId='',vjMessage=
 const LS_PROG='oi3_progress', LS_RUN='oi3_run', LS_NAME='oi2_name', LS_MPRUN='oi3_mprun', LS_VJ='oi3_vjudge',
   LS_HISTORY='oi3_history', LS_STATS_CONSENT='oi3_stats_consent', LS_ONBOARD='oi3_onboard';
 let telemetryMsg='',onboardingOpen=lsGet(LS_ONBOARD)!=='1';
+let savePanel=false,saveCode='',saveError='',savePausedCombat=null;
 function lsGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function lsSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
 function lsDel(k){try{localStorage.removeItem(k)}catch(e){}}
@@ -492,6 +493,116 @@ function save(){
   else if(run&&!run.mp)lsDel(LS_RUN);
   else if(run&&run.mp)mpSave();
   syncStatus()
+}
+const SAVE_PREFIX='OISP2:';
+function archiveSource(){
+  let current=run;
+  if(!current)try{current=JSON.parse(lsGet(LS_RUN)||'null')}catch(e){current=null}
+  if(net.connected||net.want||!current||current.mp||current.over||current.victory)current=null;
+  return{run:current,progress:JSON.parse(JSON.stringify(prog))};
+}
+function encodeRunArchive(source){
+  const data=source||archiveSource(),progress=JSON.parse(JSON.stringify(data.progress));
+  if(!validArchiveProgress(progress))throw new Error('解锁进度无效，无法生成存档');
+  let copy=data.run?JSON.parse(JSON.stringify(data.run)):null;
+  if(copy){
+    if(copy.mp||copy.over||copy.victory)throw new Error('多人、已结束的对局不放入单人存档');
+    const c=copy.room&&copy.room.combat;
+    if(c&&c.started&&!c.done){
+      const rem=remainingMs(data.run.room.combat);
+      if(!Number.isFinite(rem))throw new Error('战斗计时状态无效，无法存档');
+      c.graceMs=rem-(Number(c.extraMs)||0);c.startAt=0;
+    }
+  }
+  const bytes=new TextEncoder().encode(JSON.stringify({format:'oi-spire-save',version:2,progress,run:copy}));
+  let binary='';
+  for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode.apply(null,Array.from(bytes.subarray(i,i+0x8000)));
+  return SAVE_PREFIX+btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function validArchiveProgress(p){
+  const record=o=>o&&typeof o==='object'&&!Array.isArray(o);
+  return !!(p&&Array.isArray(p.unl)&&p.unl.length===3&&p.unl.every(v=>Number.isInteger(v)&&v>=0&&v<=10)&&
+    record(p.best)&&Object.keys(p.best).every(k=>/^\d+$/.test(k)&&+k<=GI_MAX&&Number.isInteger(p.best[k])&&p.best[k]>=0&&p.best[k]<=3)&&
+    record(p.cleared)&&Object.keys(p.cleared).every(k=>/^\d+$/.test(k)&&+k<=GI_MAX&&typeof p.cleared[k]==='boolean'));
+}
+function mergeArchiveProgress(saved){
+  const best={},cleared={},keys=new Set([...Object.keys(prog.best),...Object.keys(saved.best)]);
+  keys.forEach(k=>{best[k]=Math.max(Number(prog.best[k])||0,Number(saved.best[k])||0)});
+  new Set([...Object.keys(prog.cleared),...Object.keys(saved.cleared)]).forEach(k=>{cleared[k]=!!(prog.cleared[k]||saved.cleared[k])});
+  prog={unl:prog.unl.map((v,i)=>Math.max(v,saved.unl[i])),best,cleared};saveProg();
+}
+function decodeRunArchive(text){
+  const code=String(text||'').trim();
+  if(!code.startsWith(SAVE_PREFIX))throw new Error('存档字符串格式不正确');
+  if(code.length>1000000)throw new Error('存档文件过大');
+  const b64=code.slice(SAVE_PREFIX.length).replace(/-/g,'+').replace(/_/g,'/');
+  const binary=atob(b64+'='.repeat((4-b64.length%4)%4)),bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  const data=JSON.parse(new TextDecoder().decode(bytes));
+  if(!data||data.format!=='oi-spire-save'||![1,2].includes(data.version)||!Object.prototype.hasOwnProperty.call(data,'run'))
+    throw new Error('不支持此版本的存档');
+  const progress=data.version===2?data.progress:JSON.parse(JSON.stringify(prog));
+  if(!validArchiveProgress(progress))throw new Error('存档中的解锁进度无效');
+  const r=data.run;
+  if(r!==null){
+    if(!r||r.v!==5)throw new Error('不支持此版本的对局存档');
+    if(r.mp||r.over||r.victory)throw new Error('该存档不是可恢复的单人进行中存档');
+    if(r.test&&!testMode)throw new Error('测试模式存档需要先开启测试模式');
+    if(typeof r.seed!=='string'||r.seed.length>20||!Number.isInteger(r.gi)||r.gi<0||r.gi>GI_MAX||
+      r.tier!==Math.floor(r.gi/11)||r.difficulty!==r.gi%11||!Number.isInteger(r.act)||r.act<1||r.act>3||
+      !Number.isFinite(r.hp)||!Number.isFinite(r.maxHp)||!Number.isFinite(r.gold)||
+      !Array.isArray(r.relics)||r.relics.some(id=>!Object.prototype.hasOwnProperty.call(RELICS,id))||
+      !Array.isArray(r.potions)||r.potions.some(id=>!Object.prototype.hasOwnProperty.call(POTIONS,id))||
+      !Array.isArray(r.pending)||r.pending.some(id=>!Object.prototype.hasOwnProperty.call(POTIONS,id))||
+      !r.map||typeof r.map!=='object'||!r.map.ancient||!Array.isArray(r.map.draw)||
+      !r.visited||typeof r.visited!=='object'||!r.stats||typeof r.stats!=='object')
+      throw new Error('存档内容无效或已损坏');
+    if(r.custom&&typeof r.custom!=='object')throw new Error('自定义存档内容无效');
+    if(r.room){
+      const kinds=['monster','elite','boss','ancient','shop','rest','treasure','event'];
+      const phases=['prep','fight','won','choose','result','open'];
+      if(typeof r.room!=='object'||!kinds.includes(r.room.kind)||!r.room.node||
+        !Number.isFinite(r.room.node.r)||!Number.isFinite(r.room.node.c)||!phases.includes(r.room.phase))
+        throw new Error('存档中的当前关卡无效');
+      if(['monster','elite','boss'].includes(r.room.kind)&&
+        (!r.room.combat||typeof r.room.combat!=='object'||!Number.isFinite(r.room.combat.graceMs)||
+        !Number.isFinite(r.room.combat.extraMs)||typeof r.room.combat.started!=='boolean'||typeof r.room.combat.done!=='boolean'))
+        throw new Error('存档中的战斗状态无效');
+    }
+    const savedMap=r.map,map=genMap(r.seed,r.act,r.difficulty,r.custom&&r.custom.pr||null);
+    map.ancient={done:!!savedMap.ancient.done};
+    map.draw=savedMap.draw.filter(st=>st&&typeof st.id==='string'&&typeof st.c==='string'&&Array.isArray(st.p)&&
+      st.p.length<=500&&st.p.every(p=>Array.isArray(p)&&p.length===2&&Number.isFinite(p[0])&&Number.isFinite(p[1]))).slice(0,200);
+    r.map=map;
+    const c=r.room&&r.room.combat;
+    if(c&&c.started&&!c.done)c.startAt=Date.now();
+  }
+  return{run:r,progress};
+}
+function savePanelHTML(){
+  let hint=saveError?`<div class="msg" style="border-color:var(--bad)">${esc(saveError)}</div>`:'';
+  return `<div class="modal-bg"><div class="modal"><h2>游戏进度存档</h2>
+    <p class="dim" style="margin:0">存档包含已解锁进度，以及当前进行中的单人对局（如果有）。导入会保留你已有的更高解锁进度；含对局的存档会恢复到保存时的状态和剩余战斗时间。</p>
+    ${hint}<textarea id="saveArchiveText" spellcheck="false" placeholder="粘贴 OISP2: 开头的存档字符串">${esc(saveCode)}</textarea>
+    <div class="row"><button data-a="copyArchive">复制字符串</button><button data-a="downloadArchive">下载存档文件</button><label class="row">读取存档文件 <input type="file" id="saveArchiveFile" accept=".oisave,.txt"></label></div>
+    <div class="row"><button class="primary" data-a="importArchive">导入存档</button><button data-a="closeArchive">关闭</button></div>
+  </div></div>`;
+}
+function pauseArchiveTimer(){
+  const c=cb();
+  if(c&&c.started&&!c.done){
+    const rem=remainingMs(c);
+    c.graceMs=rem-(Number(c.extraMs)||0);c.startAt=Date.now();savePausedCombat=c;save();
+  }
+}
+function resumeArchiveTimer(){
+  if(savePausedCombat&&run&&cb()===savePausedCombat){savePausedCombat.startAt=Date.now();save()}
+  savePausedCombat=null;
+}
+function copyArchiveText(text){
+  const fallback=()=>{const el=document.createElement('textarea');el.value=text;el.setAttribute('readonly','');el.style.position='fixed';el.style.opacity='0';document.body.appendChild(el);el.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}el.remove();toast(ok?'存档字符串已复制':'复制失败，请手动选择存档字符串')};
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text).then(()=>toast('存档字符串已复制')).catch(fallback);
+  else fallback();
 }
 function runModeName(mode){
   return ({practice:'no-timer practice',list:'fixed-list challenge',team_race:'team race',custom:'custom'})[mode]||'standard';
@@ -1199,6 +1310,7 @@ function render(){
     else $app.innerHTML=menuHTML();
     if(lgPanel&&view!=='game')$app.insertAdjacentHTML('beforeend',lgPanelHTML());
     if(vjPanel)$app.insertAdjacentHTML('beforeend',vjPanelHTML());
+    if(savePanel)$app.insertAdjacentHTML('beforeend',savePanelHTML());
     $app.insertAdjacentHTML('beforeend','<button class="themefab" data-a="theme">'+(theme==='dark'?'浅色模式':'深色模式')+'</button>');
   });
   const mw=document.getElementById('mapwrap');
@@ -1277,6 +1389,7 @@ function menuHTML(){
     <p class="tagline">把每一场战斗，换成一道题。时限内不扣血，超时后每 5 分钟失去生命。</p>
     <div class="menu-btns">
       ${saved?'<button class="primary" data-a="continue">继续上次的爬塔</button>':''}
+      <button data-a="openArchive">存档 / 导入</button>
       <button class="${saved?'':'primary'}" data-a="goSelect">单人爬塔</button>
       <button data-a="goCustom">自定义模式</button>
       <button data-a="goLobby">多人联机</button>
@@ -1299,6 +1412,7 @@ function rulesHTML(){
     <p><b>战斗</b>：进入战斗后，页面给出所需的题目颜色。可点「随机跳题」从洛谷离线题库（或你指定的题单）中抽题，也可自行跳题。绑定 VJudge 后，单人战斗须先选题，开始计时后在 VJudge 提交洛谷题目，再点「验证 VJudge AC」；联机时，绑定账号提交的 AC 也会由服务器核验。未绑定账号仍可手动确认。战斗没有退路：要么AC，要么生命耗尽。</p>
     <p><b>时限与超时</b>：时限之内不扣生命。普及、提高难度下，普通战斗 20 分钟、精英战斗 40 分钟、首领战斗 60 分钟；省选难度下分别为 60、90、120 分钟。超时之后，每满 5 分钟失去一次生命（普通 10、精英 10、首领 20，随幕数与难度递增），直至 AC。生命归零则本次爬塔结束。计时依系统时间，刷新页面不会重置。</p>
     <p><b>题单</b>：在「题库 / 题单设置」中可添加一个或多个洛谷题单（填写编号或链接），勾选后随机跳题只会从其中抽取。抓取题单须经由 <span class="mono">node server.js</span>，亦可手动粘贴题号导入。</p>
+    <p><b>存档</b>：在主菜单打开「存档 / 导入」，复制存档字符串或下载文件；存档会记录已解锁的进阶，以及当前进行中的单人对局。导入会保留本机已有的更高解锁进度，并可恢复存档中的单人对局。</p>
     <p><b>规划路径</b>：点「规划路径」，即可在地图上自由描画；多人联机时，同伴也能看到你的笔迹。</p>
     <p><b>关卡</b>：普通战斗、精英战斗、未知之地（四十余种事件，也可能化作战斗、商店或宝箱）、休息处、商店、宝箱。精英战斗必掉遗物，首领战斗可三选一。</p>
     <p><b>药水栏</b>：药水栏已满时，新得的药水会暂存在顶部的「待取」处；你可以随时在顶部使用、丢弃已有的药水，再将其收入。各类弹出的关卡面板不会遮挡顶部栏位。</p>
@@ -1924,7 +2038,7 @@ function lobbyHTML(){
 
 /* ---------- 计时 ---------- */
 function tick(){
-  if(run&&!run.over&&run.room&&run.room.combat&&run.room.phase==='fight'){
+  if(!savePanel&&run&&!run.over&&run.room&&run.room.combat&&run.room.phase==='fight'){
     const c=run.room.combat;
     applyOvertime();
     if(run.over)return;
@@ -1950,6 +2064,40 @@ $app.addEventListener('click',e=>{
   const a=t.dataset.a,d=t.dataset;
   switch(a){
     case 'goMenu':view='menu';render();break;
+    case 'openArchive':{
+      savePanel=true;saveError='';
+      try{saveCode=encodeRunArchive(archiveSource())}
+      catch(x){saveCode='';saveError=x.message||'无法生成存档'}
+      if(saveCode&&run&&!run.mp&&!net.connected&&!net.want)pauseArchiveTimer();
+      render();break;
+    }
+    case 'closeArchive':savePanel=false;resumeArchiveTimer();saveError='';render();break;
+    case 'copyArchive':{
+      const el=document.getElementById('saveArchiveText'),text=((el&&el.value)||'').trim();
+      if(!text)toast('没有可复制的存档字符串');else copyArchiveText(text);
+      break;
+    }
+    case 'downloadArchive':{
+      const el=document.getElementById('saveArchiveText'),text=((el&&el.value)||'').trim();
+      if(!text){toast('没有可下载的存档字符串');break}
+      const blob=new Blob([text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');
+      link.href=url;link.download='oi-spire-save.oisave';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('存档文件已下载');break;
+    }
+    case 'importArchive':{
+      const el=document.getElementById('saveArchiveText');
+      try{
+        const archive=decodeRunArchive(el&&el.value);
+        mergeArchiveProgress(archive.progress);
+        savePanel=false;saveError='';
+        if(archive.run){
+          savePausedCombat=null;run=archive.run;curStroke=null;drawMode=false;lastMapAct=null;
+          view='game';save();render();toast('存档和解锁进度已恢复');
+        }else{
+          resumeArchiveTimer();view='menu';render();toast('解锁进度已导入');
+        }
+      }catch(x){saveError=x.message||'导入存档失败';render()}
+      break;
+    }
     case 'goRules':view='rules';render();break;
     case 'rcFold':roomFold=!roomFold;render();break;
     case 'goCustom':view='custom';render();break;
@@ -2047,6 +2195,11 @@ $app.addEventListener('click',e=>{
   }
 });
 $app.addEventListener('change',async e=>{
+  if(e.target.id==='saveArchiveFile'&&e.target.files&&e.target.files[0]){
+    try{saveCode=(await e.target.files[0].text()).trim();saveError='';render();const area=document.getElementById('saveArchiveText');if(area)area.value=saveCode}
+    catch(x){saveError='读取存档文件失败：'+(x.message||'未知错误');render()}
+    return;
+  }
   if(e.target.id==='lgFile'&&e.target.files&&e.target.files[0]){
     try{lgBusy='读取文件中……';lgErr='';render();await lgImport(await e.target.files[0].arrayBuffer());toast('题库已导入：'+lgCount+' 题')}
     catch(x){lgBusy='';lgErr='导入失败：'+x.message}
