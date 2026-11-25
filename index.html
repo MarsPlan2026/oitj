@@ -972,8 +972,8 @@ const net={ws:null,connected:false,reconnecting:false,want:null,joinedOnce:false
 const netActive=()=>!!(net.connected||net.reconnecting);
 function getCid(){let c=ssGet('oi_cid');if(!c){c=Array.from({length:14},()=>'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random()*36)]).join('');ssSet('oi_cid',c)}return c}
 function defaultWs(){
-  if(location.protocol==='http:'||location.protocol==='https:')return (location.protocol==='https:'?'wss://':'ws://')+location.host;
-  return 'ws://localhost:8787';
+  if(location.protocol==='http:'||location.protocol==='https:')return (location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws';
+  return 'ws://localhost:8787/ws';
 }
 function myStatus(){
   if(!run)return{st:'未开局'};
