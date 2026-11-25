@@ -389,7 +389,8 @@ function handle(conn, msg) {
     m.vjToken = binding ? String(msg.vjToken) : null;
     m.vjUsername = binding ? binding.username : null;
     ensureHost(room);
-    send(m, { t: 'joined', you: m.id, room: code, host: room.host, started: room.started, config: room.config, g: gState(room), members: memberList(room), resumed, player: !!(room.game && room.game.players.has(m.id)), vjBound: !!m.vjUsername });
+    send(m, { t: 'joined', you: m.id, room: code, host: room.host, started: room.started, config: room.config, g: gState(room), members: memberList(room), resumed,
+      player: room.config && room.config.mode === 'team_race' ? !!(room.racePlayers && room.racePlayers.has(m.id)) : !!(room.game && room.game.players.has(m.id)), vjBound: !!m.vjUsername });
     const g0 = room.game;
     if (g0 && !g0.over && g0.players.has(m.id) && g0.phase === 'room' && g0.go && !g0.done[m.id]) send(m, { t: 'go', r: g0.go.r, c: g0.go.c, step: g0.go.step, again: true });
     pushMembers(room);
@@ -422,15 +423,24 @@ function handle(conn, msg) {
     const difficulty = Math.max(0, Math.min(10, Number.isFinite(d) ? Math.floor(d) : 0));
     const tier = Math.max(0, Math.min(2, Number.isFinite(tr) ? Math.floor(tr) : 0));
     const seed = String(m.seed || Math.random().toString(36).slice(2, 8)).slice(0, 20);
-    room.started = true; room.config = { tier, difficulty, seed };
-    room.game = newGame(room);
+    const mode = m.mode === 'team_race' ? 'team_race' : 'cooperative';
+    room.started = true; room.config = { tier, difficulty, seed, mode };
+    if (mode === 'team_race') {
+      room.racePlayers = new Set([...room.members.values()].filter(mm => mm.online).map(mm => mm.id));
+      room.game = null;
+    } else {
+      room.racePlayers = null;
+      room.game = newGame(room);
+    }
     for (const mm of room.members.values()) mm.status = null;
     broadcast(room, { t: 'start', config: room.config });
-    pushG(room);
-    goTo(room, -1, 3);      // 第一座塔：先去找先古遗民
+    if (mode !== 'team_race') {
+      pushG(room);
+      goTo(room, -1, 3);
+    }
   } else if (t === 'reset') {
     if (room.host !== c.id) return;
-    room.started = false; room.config = null; room.game = null;
+    room.started = false; room.config = null; room.game = null; room.racePlayers = null;
     broadcast(room, { t: 'lobby' });
     pushG(room);
   } else if (t === 'spectate') {

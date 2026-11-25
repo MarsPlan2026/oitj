@@ -1031,7 +1031,8 @@ function myStatus(){
   const KN={monster:'普通战斗',elite:'精英战斗',boss:'首领战斗',shop:'商店',rest:'休息处',treasure:'宝箱',event:'事件',ancient:'先古之民'};
   let st='地图';
   if(run.victory)st='已通关';else if(run.over)st='已死亡';else if(rm)st=KN[rm.kind]||'地图';
-  return{d:run.difficulty,tier:run.tier||0,act:run.act,floor:run.pos?run.pos.r+1:0,hp:run.hp,max:run.maxHp,gold:run.gold,rel:run.relics.length,st,
+  const loc=rm&&rm.node?rm.node:run.pos;
+  return{d:run.difficulty,tier:run.tier||0,act:run.act,floor:loc&&loc.r>=0?loc.r+1:0,pos:loc?{r:loc.r,c:loc.c}:null,hp:run.hp,max:run.maxHp,gold:run.gold,rel:run.relics.length,st,
     rem:(c&&c.started&&!c.done&&!run.over)?remainingMs(c):null,over:run.over,win:run.victory,wins:run.stats.wins};
 }
 let syncT=0;
@@ -1099,7 +1100,10 @@ function onNet(m){
     let inGame=false;
     if(m.started&&m.config){
       if(m.player){
-        if(run&&run.mp&&String(run.seed)===String(m.config.seed))inGame=true;
+        if(m.config.mode==='team_race'){
+          let saved=null;try{saved=JSON.parse(lsGet(LS_RUN)||'null')}catch(e){}
+          if(saved&&saved.mode==='team_race'&&String(saved.seed)===String(m.config.seed)&&!saved.over&&!saved.victory){run=saved;inGame=true;view='game'}
+        }else if(run&&run.mp&&String(run.seed)===String(m.config.seed))inGame=true;
         else{const sv=mpLoad();if(sv&&sv.room===m.room&&String(sv.seed)===String(m.config.seed)&&sv.run&&!sv.run.over&&!sv.run.victory){run=sv.run;run.mp=true;lastMapAct=null;inGame=true;view='game'}}
       }
       if(inGame){net.spectate=false;if(!again)view='game'}
@@ -1110,12 +1114,13 @@ function onNet(m){
     const ob=net.outbox;net.outbox=[];ob.forEach(netSend);
     syncStatus();render();
   }else if(m.t==='members'){net.host=m.host;setMembers(m.members);renderSide();if(view==='lobby')render()}
-  else if(m.t==='status'){if(net.members[m.id]){net.members[m.id].s=m.s;net.members[m.id].at=Date.now()}renderSide()}
+  else if(m.t==='status'){if(net.members[m.id]){net.members[m.id].s=m.s;net.members[m.id].at=Date.now()}if(view==='game'&&net.config&&net.config.mode==='team_race')render();else renderSide()}
   else if(m.t==='chat'){net.chat.push({n:m.name,x:m.text});if(net.chat.length>80)net.chat.shift();renderSide()}
   else if(m.t==='start'){
     net.started=true;net.config=m.config;net.g=null;
     const gi=cfgGi(m.config);
     if(!isUnlocked(gi)){net.spectate=true;netSend({t:'spectate'});view='lobby';render();toast('你尚未解锁「'+giName(gi)+'」，本局只能观战')}
+    else if(m.config.mode==='team_race'){net.spectate=false;startRun(gi,m.config.seed,false,null,'team_race');toast('团队竞速开始：'+giName(gi)+'，种子 '+m.config.seed)}
     else{net.spectate=false;startRun(gi,m.config.seed,true);toast('对局开始：'+giName(gi)+'，种子 '+m.config.seed)}
   }
   else if(m.t==='g'){net.g=m.g;onGUpdate()}
@@ -1298,7 +1303,7 @@ function rulesHTML(){
     <p><b>关卡</b>：普通战斗、精英战斗、未知之地（四十余种事件，也可能化作战斗、商店或宝箱）、休息处、商店、宝箱。精英战斗必掉遗物，首领战斗可三选一。</p>
     <p><b>药水栏</b>：药水栏已满时，新得的药水会暂存在顶部的「待取」处；你可以随时在顶部使用、丢弃已有的药水，再将其收入。各类弹出的关卡面板不会遮挡顶部栏位。</p>
     <p><b>自定义模式</b>：可自行设定普通、精英、首领战斗各自的时限、超时间隔、每次扣血与题目难度范围，并调整初始生命、金币、药水栏位、金币奖励、商店价格、休息处回复、精英出现率等。自定义对局不计入解锁进度，仅限单人。</p>
-    <p><b>多人联机</b>：运行 <span class="mono">node server.js</span> 后，同房间的玩家共用一个种子，并如杀戮尖塔 2 一般共同选路：每人为下一处节点投票，得票最多者胜出（平票随机），全队同入一间。战斗时全队共用同一组题：任何人抽题，所有人看到相同的题目；题数为 floor(人数 ÷ 3 × 2)（至少 1 道）；任何一人AC某题，该题即告击败；全部击败后，各人分别结算奖励。生命、遗物、金币各算各的；死亡者转为观战，全队死亡则本局告负。掉线后席位会保留一小段时间，刷新页面或网络恢复后会自动重连；关闭页面则在短暂宽限后自动离开房间。</p>
+    <p><b>多人联机</b>：合作爬塔中，全队共用地图并投票选路，战斗题目也由全队共享。团队竞速中，玩家使用相同种子和地图，但各自推进、选路与战斗，不需要投票；地图上的彩色标记显示队友所在节点，侧栏显示各自进度。竞速时每个人独立结算，先通关者可在房间状态中看到。掉线后席位会保留一段时间，刷新页面或网络恢复后会自动重连；服务器进程重启仍会清空房间。</p>
     <div class="row"><button data-a="goMenu">返回</button><button class="danger" data-a="resetProg">清空所有进度</button></div>
   </div></div>`;
 }
@@ -1389,6 +1394,13 @@ function mapHTML(){
   const canPick=!run.room&&(!mp||(net.g&&net.g.phase==='vote'&&net.g.players.includes(net.id)));
   const vmap={};
   if(mp&&net.g&&net.g.phase==='vote')for(const id in net.g.votes){const v=net.g.votes[id];(vmap[v.r+','+v.c]=vmap[v.r+','+v.c]||[]).push(id)}
+  const locmap={};
+  if(net.started&&net.config&&net.config.mode==='team_race')for(const id in net.members){
+    const s=net.members[id].s,p=s&&s.pos;
+    if(id!==net.id&&s&&s.act===run.act&&p&&Number.isInteger(p.r)&&Number.isInteger(p.c)){
+      const key=p.r+','+p.c;(locmap[key]=locmap[key]||[]).push(id);
+    }
+  }
   let edges='',ns='';
   for(let c=0;c<W;c++)if(nodes[0][c]){const b=pos['0,'+c];edges+=`<line class="edge ${anc.done?'on':''}" x1="${ap[0]}" y1="${ap[1]}" x2="${b[0]}" y2="${b[1]}"/>`}
   for(let r=0;r<TOP;r++)for(let c=0;c<W;c++){
@@ -1404,14 +1416,16 @@ function mapHTML(){
     const p=pos[r+','+c],vis=run.visited[r+','+c],isAv=av.includes(n)&&canPick,cur=run.pos&&run.pos.r===r&&run.pos.c===c;
     const rad=n.type==='boss'?36:(n.type==='elite'?30:24);
     const vs=(vmap[r+','+c]||[]).map((id,i)=>`<circle cx="${-14+i*13}" cy="${-rad-8}" r="6" fill="${memberColor(id)}" stroke="var(--panel)" stroke-width="1.5"><title>${esc((net.members[id]||{}).name||'')}</title></circle>`).join('');
+    const racers=(locmap[r+','+c]||[]).map((id,i)=>`<circle cx="${-12+i*13}" cy="${rad+9}" r="7" fill="${memberColor(id)}" stroke="var(--panel)" stroke-width="2"><title>${esc((net.members[id]||{}).name||'')} 的位置</title></circle>`).join('');
     ns+=`<g class="node ${vis?'visited':''} ${isAv?'avail':''} ${cur?'cur':''}" ${isAv?`data-a="node" data-r="${r}" data-c="${c}"`:''} transform="translate(${p[0]},${p[1]})">
       <title>${KIND_NAME[n.type]}</title>
       ${nodeShape(n.type)}
-      <text style="font-size:${n.type==='boss'?20:15}px">${KIND_GLYPH[n.type]}</text>${vs}</g>`;
+      <text style="font-size:${n.type==='boss'?20:15}px">${KIND_GLYPH[n.type]}</text>${vs}${racers}</g>`;
   }
+  const ancRacers=(locmap['-1,3']||[]).map((id,i)=>`<circle cx="${-12+i*13}" cy="38" r="7" fill="${memberColor(id)}" stroke="var(--panel)" stroke-width="2"><title>${esc((net.members[id]||{}).name||'')} 的位置</title></circle>`).join('');
   const ancAv=!anc.done&&!run.room&&!mp;
   ns+=`<g class="node ${anc.done?'visited':''} ${ancAv?'avail':''}" ${ancAv?'data-a="node" data-r="-1" data-c="3"':''} transform="translate(${ap[0]},${ap[1]})">
-    <title>先古之民</title>${nodeShape('ancient')}<text style="font-size:18px">古</text></g>`;
+    <title>先古之民</title>${nodeShape('ancient')}<text style="font-size:18px">古</text>${ancRacers}</g>`;
   const layer=drawMode?`<rect id="drawlayer" x="0" y="0" width="700" height="${H}" fill="transparent" style="cursor:crosshair"/>`:'';
   return `<svg class="${drawMode?'drawing':''}" viewBox="0 0 700 ${H}" role="img" aria-label="第 ${run.act} 幕地图">${edges}${ns}<g id="drawg" style="pointer-events:none">${strokesHTML()}</g>${layer}</svg>`;
 }
@@ -1421,6 +1435,7 @@ function drawbarHTML(){
 }
 function mpBanner(){
   if(net.reconnecting&&!net.connected)return '<div class="banner">连接已断开，正在自动重连……（你的计时仍在本地继续，重连后会自动接回对局）</div>';
+  if(run&&run.mode==='team_race')return '<div class="banner">团队竞速：独立选路，无需投票。地图上的彩色标记显示队友位置。</div>';
   if(!isMP())return '';
   const g=net.g;
   if(!g)return '<div class="banner">联机中……</div>';
@@ -1862,7 +1877,7 @@ function sideInner(){
   const mypots=run?run.potions.map((id,i)=>`<option value="${i}">${POTIONS[id].n}</option>`).join(''):'';
   const rows=ids.map(id=>{
     const m=net.members[id],s=m.s,me=id===net.id;
-    const prog_=s&&s.act?`${TIERS[s.tier||0].n} A${s.d} · 第${s.act}幕 · ${s.floor}/${ROWS}层`:'未开局';
+    const prog_=s&&s.act?`${TIERS[s.tier||0].n} A${s.d} · 第${s.act}幕 · ${s.floor}/${ROWS}层${net.config&&net.config.mode==='team_race'&&s.pos&&s.pos.r>=0?' · 第'+(s.pos.c+1)+'列':''}`:'未开局';
     const rem=s&&s.rem!=null?(s.rem>0?` · <span class="mono" data-end="${m.at+s.rem}">${fmtTime(s.rem)}</span>`:' · <span style="color:var(--bad)">超时</span>'):'';
     const offline=m.o===false?` <span class="dim">（重连中${m.until?`，剩余 <span class="mono" data-end="${m.until}"></span>`:''}）</span>`:'';
     return `<div class="pl ${me?'me':''}"><div class="top"><b><span class="dot" style="background:${memberColor(id)}"></span>${esc(m.name)}${id===net.host?' <span class="dim">房主</span>':''}${offline}${me?' <span class="dim">我</span>':''}</b><span class="dim">${s?esc(s.st):''}${rem}${gmark(id)}</span></div>
@@ -1894,15 +1909,16 @@ function lobbyHTML(){
   const opts=unlockedList().map(i=>`<option value="${i}">${giName(i)}</option>`).join('');
   let ctl;
   if(net.spectate)ctl=`<div class="msg">你没有参与本局（未解锁「${giName(cfgGi(net.config))}」，或是中途加入），只能观战队友。</div>`;
-  else if(net.started)ctl=`<div class="msg">对局已开始（${giName(cfgGi(net.config))}，种子 ${esc(net.config.seed)}）。</div>
-    <div class="row">${run&&run.mp?'<button class="primary" data-a="toGame">回到对局</button>':'<span class="dim">对局已开始，你只能观战队友。</span>'}</div>`;
+  else if(net.started)ctl=`<div class="msg">对局已开始（${giName(cfgGi(net.config))}，${net.config.mode==='team_race'?'团队竞速':'合作爬塔'}，种子 ${esc(net.config.seed)}）。</div>
+    <div class="row">${(run&&run.mp)||(run&&run.mode==='team_race')?'<button class="primary" data-a="toGame">回到对局</button>':'<span class="dim">对局已开始，你只能观战队友。</span>'}</div>`;
   else ctl=isHost?`<div class="field"><label for="hostD" class="dim">进阶（仅可选择你已解锁的）</label><select id="hostD">${opts}</select></div>
+      <div class="field"><label for="hostMode" class="dim">多人玩法</label><select id="hostMode"><option value="cooperative">合作爬塔（共同选路）</option><option value="team_race">团队竞速（各自选路，地图显示位置）</option></select></div>
       <div class="field"><label for="hostSeed" class="dim">种子（留空则随机）</label><input id="hostSeed" maxlength="20"></div>
       <button class="primary" data-a="hostStart">开始对局</button>`:`<div class="msg">等待房主开始对局……</div>`;
   return `<div class="wrap"><div class="row" style="margin-bottom:12px"><button data-a="goMenu">返回菜单</button><button data-a="leaveNet">离开房间</button><h2>房间 <span class="mono">${esc(net.room)}</span></h2></div>
     <div class="lobby"><div class="panel"><h3 style="margin-bottom:10px">对局设置</h3>${ctl}
       ${isHost&&net.started?'<div class="row" style="margin-top:10px"><button data-a="hostReset">结束当前对局，回到大厅</button></div>':''}
-      <p class="dim">同房间的玩家使用相同种子，地图、事件与商店完全一致。通关进阶后才能解锁下一进阶。</p></div>
+      <p class="dim">${net.config&&net.config.mode==='team_race'?'竞速时每人独立选择路线、战斗和结算；地图标记会显示队友所在节点。':'合作模式下玩家共用路线和战斗。'} 团队竞速使用相同种子，便于比较进度。</p></div>
     <div class="side" id="side" style="max-height:none">${sideInner()}</div></div></div>`;
 }
 
@@ -2004,7 +2020,8 @@ $app.addEventListener('click',e=>{
     case 'leaveNet':netLeave();break;
     case 'hostStart':{
       const gi=+document.getElementById('hostD').value,s=(document.getElementById('hostSeed').value||'').trim()||Math.random().toString(36).slice(2,8);
-      netSend({t:'start',tier:Math.floor(gi/11),difficulty:gi%11,seed:s});break}
+      const mode=(document.getElementById('hostMode')||{}).value||'cooperative';
+      netSend({t:'start',tier:Math.floor(gi/11),difficulty:gi%11,seed:s,mode});break}
     case 'hostReset':netSend({t:'reset'});break;
     case 'chat':{const i=document.getElementById('chatIn');if(i&&i.value.trim()){netSend({t:'chat',text:i.value.trim()});i.value=''}break}
     case 'gift':giftPotion(d.to);break;
