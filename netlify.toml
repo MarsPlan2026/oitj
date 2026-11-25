@@ -1,5 +1,6 @@
 [build]
-  publish = "."
+  command = "mkdir -p dist && cp index.html dist/index.html"
+  publish = "dist"
 
 [server]
   region = "fra"
