@@ -248,6 +248,18 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(data);
     });
+  } else if (url === '/css/style.css') {
+    fs.readFile(path.join(__dirname, 'css', 'style.css'), (err, data) => {
+      if (err) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('style.css not found'); return; }
+      res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' });
+      res.end(data);
+    });
+  } else if (url === '/js/main.js') {
+    fs.readFile(path.join(__dirname, 'js', 'main.js'), (err, data) => {
+      if (err) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('main.js not found'); return; }
+      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+      res.end(data);
+    });
   } else { res.writeHead(404); res.end('Not found'); }
 });
 

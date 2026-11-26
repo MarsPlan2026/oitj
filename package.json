@@ -1,5 +1,15 @@
 {
   "name": "oitj",
-  "version": "1.0.0",
-  "private": true
+  "version": "1.1.2",
+  "private": true,
+  "description": "OI Spire II - solving contests as a roguelike",
+  "scripts": {
+    "start": "node server.js",
+    "build": "node scripts/build.js",
+    "test": "node --test tests/*.test.js",
+    "check": "node --check server.js && node --check js/main.js && node --check netlify/server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }
