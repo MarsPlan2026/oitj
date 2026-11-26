@@ -595,6 +595,3 @@ server.listen(PORT, () => {
   console.log('OI 尖塔 II 已启动： http://localhost:' + PORT);
   console.log('局域网内其他人请访问： http://<本机IP>:' + PORT);
 });
-
-
-{"content":[{"text":"successfully downloaded text file (SHA: bbcef950bd461f0d6112d175a9a9a4f7e13aeed6)","type":"text"},{"resource":{"mimeType":"text/plain; charset=utf-8","uri":"repo://MarsPlan2026/oitj/sha/0ce7475d6ddadcb70d170664264c2515d7e8a789/contents/server.js"},"type":"resource"}]}
