@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
 
@@ -37,6 +38,17 @@ test('completed run history is reachable and includes recap metrics', () => {
   assert.match(js, /elites:run\.stats\.elites/);
   assert.match(js, /累计用时/);
   assert.match(js, /累计超时扣血/);
+});
+
+test('unknown rooms favor events, shops, and treasure over combat', () => {
+  const js = fs.readFileSync(path.join(root, 'js/main.js'), 'utf8');
+  const resolver = js.match(/const UNKNOWN_ROOM_OUTCOMES=.*?;\nfunction resolveUnknown\(rr\)\{[\s\S]*?\n\}/);
+  assert.ok(resolver);
+  const resolveUnknown = vm.runInNewContext(`(()=>{${resolver[0]};return resolveUnknown})()`);
+  assert.equal(resolveUnknown(() => 0.05), 'monster');
+  assert.equal(resolveUnknown(() => 0.15), 'shop');
+  assert.equal(resolveUnknown(() => 0.32), 'treasure');
+  assert.equal(resolveUnknown(() => 0.5), 'event');
 });
 
 test('netlify static build lists index and assets', () => {

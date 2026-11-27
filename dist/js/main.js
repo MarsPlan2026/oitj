@@ -568,7 +568,12 @@ function enterNode(r,c){
   makeRoom(type,{r,c},rr);
   save();render();focusRoom();
 }
-function resolveUnknown(rr){const v=rr();return v<0.22?'monster':v<0.32?'shop':v<0.42?'treasure':'event'}
+const UNKNOWN_ROOM_OUTCOMES=[['monster',0.10],['shop',0.15],['treasure',0.15],['event',0.60]];
+function resolveUnknown(rr){
+  const roll=rr();let cumulative=0;
+  for(const [type,weight] of UNKNOWN_ROOM_OUTCOMES){cumulative+=weight;if(roll<cumulative)return type}
+  return 'event';
+}
 function makeRoom(type,pos,rr,evId){
   run.room={node:{r:pos.r,c:pos.c},kind:type,phase:'prep'};
   if(type==='monster'||type==='elite'||type==='boss'){
@@ -1277,7 +1282,7 @@ function rulesHTML(){
     <p><b>题单</b>：在「题库 / 题单设置」中可添加一个或多个洛谷题单（填写编号或链接），勾选后随机跳题只会从其中抽取。抓取题单须经由 <span class="mono">node server.js</span>，亦可手动粘贴题号导入。</p>
     <p><b>存档</b>：在主菜单打开「存档 / 导入」，复制存档字符串或下载文件；存档会记录已解锁的进阶，以及当前进行中的单人对局。导入会保留本机已有的更高解锁进度，并可恢复存档中的单人对局。</p>
     <p><b>规划路径</b>：点「规划路径」，即可在地图上自由描画；多人联机时，同伴也能看到你的笔迹。</p>
-    <p><b>关卡</b>：普通战斗、精英战斗、未知之地（四十余种事件，也可能化作战斗、商店或宝箱）、休息处、商店、宝箱。精英战斗必掉遗物，首领战斗可三选一。</p>
+    <p><b>关卡</b>：普通战斗、精英战斗、未知之地（开启后有 10% 概率变为普通战斗、15% 商店、15% 宝箱、60% 随机事件）、休息处、商店、宝箱。精英战斗必掉遗物，首领战斗可三选一。</p>
     <p><b>药水栏</b>：药水栏已满时，新得的药水会暂存在顶部的「待取」处；你可以随时在顶部使用、丢弃已有的药水，再将其收入。各类弹出的关卡面板不会遮挡顶部栏位。</p>
     <p><b>自定义模式</b>：可自行设定普通、精英、首领战斗各自的时限、超时间隔、每次扣血与题目难度范围，并调整初始生命、金币、药水栏位、金币奖励、商店价格、休息处回复、精英出现率等。自定义对局不计入解锁进度，仅限单人。</p>
     <p><b>多人联机</b>：合作爬塔中，全队共用地图并投票选路，战斗题目也由全队共享。团队竞速中，玩家使用相同种子和地图，但各自推进、选路与战斗，不需要投票；地图上的彩色标记显示队友所在节点，侧栏显示各自进度。竞速时每个人独立结算，先通关者可在房间状态中看到。掉线后席位会保留一段时间，刷新页面或网络恢复后会自动重连；服务器进程重启仍会清空房间。</p>

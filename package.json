@@ -1,6 +1,6 @@
 {
   "name": "oitj",
-  "version": "1.1.2",
+  "version": "1.2.3",
   "private": true,
   "description": "OI Spire II - solving contests as a roguelike",
   "scripts": {
