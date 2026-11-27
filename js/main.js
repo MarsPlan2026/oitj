@@ -426,13 +426,56 @@ function runModeName(mode){
   return ({practice:'no-timer practice',list:'fixed-list challenge',team_race:'team race',custom:'custom'})[mode]||'standard';
 }
 function historyRuns(){try{const h=JSON.parse(lsGet(LS_HISTORY));return Array.isArray(h)?h:[]}catch(e){return[]}}
+function historyModeName(mode){
+  return ({standard:'标准',practice:'无计时练习',list:'固定题单',team_race:'团队竞速',custom:'自定义'})[mode]||'标准';
+}
+function historyDuration(seconds){
+  const s=Math.max(0,Math.floor(Number(seconds)||0)),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),r=s%60;
+  return h?`${h}小时${m}分`:`${m}分${String(r).padStart(2,'0')}秒`;
+}
+function historyHTML(){
+  const rows=historyRuns().filter(x=>x&&Number.isInteger(x.gi)&&x.gi>=0&&x.gi<=GI_MAX);
+  const wins=rows.filter(x=>x.result==='win').length;
+  const totalTime=rows.reduce((n,x)=>n+(Number(x.duration)||0),0);
+  const totalSolved=rows.reduce((n,x)=>n+(Number(x.wins)||0),0);
+  const totalDrain=rows.reduce((n,x)=>n+(Number(x.drain)||0),0);
+  const totalElites=rows.reduce((n,x)=>n+(Number(x.elites)||0),0);
+  const best=rows.reduce((b,x)=>{
+    const act=Math.max(1,Math.min(3,Number(x.act)||1)),floor=Math.max(0,Number(x.floor)||0);
+    return act>b.act||act===b.act&&floor>b.floor?{act,floor}:b;
+  },{act:0,floor:0});
+  const cards=rows.map(x=>{
+    const when=Number.isFinite(Number(x.at))?new Date(Number(x.at)).toLocaleString():'时间未知';
+    const result=x.result==='win';
+    const act=Math.max(1,Math.min(3,Number(x.act)||1));
+    const floor=Math.max(0,Number(x.floor)||0);
+    return `<article class="panel history-card">
+      <div class="row"><b>${esc(giName(x.gi))}</b><span class="chip">${esc(historyModeName(x.mode))}</span><span class="spacer"></span><b class="${result?'':'dim'}">${result?'通关':'未通关'}</b></div>
+      <div class="dim">${esc(when)} · ${STAGE_NAMES[act-1]}${floor?` · 第 ${floor} 层`:''}</div>
+      <div class="row history-stats"><span>用时 ${esc(historyDuration(x.duration))}</span><span>战斗胜利 ${Number(x.wins)||0} 场</span><span>精英 ${Number(x.elites)||0} 位</span><span>遗物 ${Number(x.relics)||0} 件</span><span>超时扣血 ${Number(x.drain)||0}</span></div>
+      <div class="row"><span class="dim">种子 <span class="mono">${esc(x.seed||'—')}</span></span><span class="spacer"></span><button data-a="historySeed" data-seed="${esc(x.seed||'')}">复制种子</button></div>
+    </article>`;
+  }).join('');
+  return `<div class="wrap"><div class="row" style="margin-bottom:12px"><button data-a="goMenu">返回菜单</button><h2>战绩复盘</h2><span class="spacer"></span>${rows.length?'<button class="danger" data-a="historyClear">清空战绩</button>':''}</div>
+    <div class="history-summary">
+      <div class="panel"><span class="dim">总局数</span><b>${rows.length}</b></div>
+      <div class="panel"><span class="dim">通关 / 胜率</span><b>${wins} / ${rows.length?Math.round(wins/rows.length*100):0}%</b></div>
+      <div class="panel"><span class="dim">最佳进度</span><b>${best.act?`第 ${best.act} 幕${best.floor?` · 第 ${best.floor} 层`:''}`:'—'}</b></div>
+      <div class="panel"><span class="dim">累计战斗胜场</span><b>${totalSolved}</b></div>
+      <div class="panel"><span class="dim">累计击败精英</span><b>${totalElites}</b></div>
+      <div class="panel"><span class="dim">累计用时</span><b>${esc(historyDuration(totalTime))}</b></div>
+      <div class="panel"><span class="dim">累计超时扣血</span><b>${totalDrain}</b></div>
+    </div>
+    <div class="history-list">${cards||'<div class="panel dim">还没有已结束的对局。完成或结束一局后，记录会显示在这里。</div>'}</div>
+  </div>`;
+}
 function finishRun(){
   if(!run||run.historySaved)return;
   run.historySaved=true;
   const duration=Math.max(0,Math.floor((Date.now()-(run.stats.startedAt||Date.now()))/1000));
   const row={seed:String(run.seed),gi:run.gi,tier:run.tier||0,difficulty:run.difficulty,mode:run.mode||'standard',
     result:run.victory?'win':'loss',act:run.act||1,floor:run.pos?run.pos.r+1:0,duration,
-    wins:run.stats.wins||0,drain:run.stats.drain||0,at:Date.now()};
+    wins:run.stats.wins||0,elites:run.stats.elites||0,relics:run.relics.length,drain:run.stats.drain||0,at:Date.now()};
   const history=historyRuns();history.unshift(row);lsSet(LS_HISTORY,JSON.stringify(history.slice(0,20)));
   lsDel(LS_RUN);lsDel(LS_MPRUN);
   if(lsGet(LS_STATS_CONSENT)==='1')submitDifficultyStats(row);
@@ -1120,6 +1163,7 @@ function render(){
     const mw=document.getElementById('mapwrap');if(mw)mapScroll=mw.scrollTop;
     const rc0=document.getElementById('roomcard');rcScroll=rc0?rc0.scrollTop:0;
     if(view==='menu')$app.innerHTML=menuHTML();
+    else if(view==='history')$app.innerHTML=historyHTML();
     else if(view==='rules')$app.innerHTML=rulesHTML();
     else if(view==='select')$app.innerHTML=selectHTML();
     else if(view==='custom')$app.innerHTML=customHTML();
@@ -1211,6 +1255,7 @@ function menuHTML(){
       <button class="${saved?'':'primary'}" data-a="goSelect">单人爬塔</button>
       <button data-a="goCustom">自定义模式</button>
       <button data-a="goLobby">多人联机</button>
+      <button data-a="goHistory">战绩复盘</button>
       <button data-a="vjPanel">${vjBinding?'VJudge：'+esc(vjBinding.username):'绑定 VJudge'}</button>
       <button data-a="lgPanel">题库 / 题单设置</button>
       <button data-a="goRules">规则说明</button>
@@ -1428,7 +1473,7 @@ function endHTML(win){
     <h2>${win?(run.custom?'自定义模式':giName(run.gi))+' 通关！':'爬塔终止'}</h2>
     <p>${win?(last?'你已通关本大难度的全部十一级。':'下一进阶「'+giName(run.gi+1)+'」已解锁。')+(run.test||run.custom?'（不计入进度）':''):'生命耗尽，你死亡于'+STAGE_NAMES[run.act-1]+'。'}</p>
     <div class="msg mono">取胜 ${st.wins} 场 · 超时扣血 ${st.drain} 点 · 精英 ${st.elites} 位 · 遗物 ${run.relics.length} 件 · 用时约 ${mins} 分钟</div>
-    <div class="row"><button class="primary" data-a="endBack">返回菜单</button>${win&&!last&&!run.mp?`<button data-a="nextDiff">挑战下一进阶</button>`:''}</div></div></div>`;
+    <div class="row"><button class="primary" data-a="endBack">返回菜单</button><button data-a="endHistory">查看战绩复盘</button>${win&&!last&&!run.mp?`<button data-a="nextDiff">挑战下一进阶</button>`:''}</div></div></div>`;
 }
 function relicLine(id){const r=RELICS[id];return `<b>${r.n}</b> <span class="chip">${RARITY_NAME[r.r]}</span> <span class="dim">${r.d}</span>`}
 function roomHTML(){
@@ -1917,6 +1962,10 @@ $app.addEventListener('click',e=>{
       break;
     }
     case 'goRules':view='rules';render();break;
+    case 'goHistory':view='history';render();break;
+    case 'endHistory':run=null;view='history';render();break;
+    case 'historySeed':if(d.seed)shareSeed(d.seed);else toast('这条战绩没有种子记录');break;
+    case 'historyClear':if(window.confirm('确定清空所有本地战绩吗？此操作无法撤销。')){lsDel(LS_HISTORY);render();toast('战绩已清空')}break;
     case 'rcFold':roomFold=!roomFold;render();break;
     case 'goCustom':view='custom';render();break;
     case 'custPreset':{cust=Object.assign(cloneC(CUST_DEF),cloneC(CUST_PRESETS[d.p]||CUST_DEF),{seed:cust.seed});custWriteDom();lsSet('oi3_custom',JSON.stringify(cust));render();break}

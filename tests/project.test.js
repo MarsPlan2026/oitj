@@ -26,6 +26,19 @@ test('save archive format is exposed by the frontend', () => {
   assert.match(js, /mergeArchiveProgress/);
 });
 
+test('completed run history is reachable and includes recap metrics', () => {
+  const js = fs.readFileSync(path.join(root, 'js/main.js'), 'utf8');
+  assert.match(js, /LS_HISTORY='oi3_history'/);
+  assert.match(js, /function historyHTML\(\)/);
+  assert.match(js, /data-a="goHistory"/);
+  assert.match(js, /case 'goHistory'/);
+  assert.match(js, /data-a="endHistory"/);
+  assert.match(js, /data-a="historySeed"/);
+  assert.match(js, /elites:run\.stats\.elites/);
+  assert.match(js, /累计用时/);
+  assert.match(js, /累计超时扣血/);
+});
+
 test('netlify static build lists index and assets', () => {
   const config = fs.readFileSync(path.join(root, 'netlify.toml'), 'utf8');
   assert.match(config, /npm run build/);
